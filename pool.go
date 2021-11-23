@@ -77,7 +77,6 @@ func (p *pool) Close() {
 	close(p.worker)
 }
 
-func NewPool(max int64) Pool {
-	p := Pool{pool{maxWorker: max}}
-	return p
+func NewPool(max int64) *Pool {
+	return &Pool{pool{maxWorker: max}}
 }
