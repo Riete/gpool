@@ -5,12 +5,12 @@ import (
 )
 
 type pool struct {
-	worker        func(interface{})
-	maxWorker     int64
-	currentWorker int64
-	queue         chan interface{}
-	restInQueue   int64
-	done          chan struct{}
+	callFunc    func(interface{})
+	worker      chan struct{}
+	maxWorker   int64
+	queue       chan interface{}
+	restInQueue int64
+	done        chan struct{}
 }
 
 type Pool struct {
@@ -18,35 +18,36 @@ type Pool struct {
 }
 
 func (p *pool) run(v interface{}) {
-	p.worker(v)
+	p.callFunc(v)
+	p.worker <- struct{}{}
 	atomic.AddInt64(&p.restInQueue, -1)
 	if atomic.LoadInt64(&p.restInQueue) == 0 {
 		close(p.done)
 	}
-	atomic.AddInt64(&p.currentWorker, -1)
 }
 
 func (p *pool) start(vs []interface{}) {
 	for _, v := range vs {
 		p.queue <- v
 	}
-	close(p.queue)
 }
 
 func (p *pool) loop() {
 	for {
-		if atomic.LoadInt64(&p.currentWorker) >= p.maxWorker {
-			continue
-		}
 		select {
-		case v, ok := <-p.queue:
-			if ok {
-				atomic.AddInt64(&p.currentWorker, 1)
-				go p.run(v)
-			}
+		case v := <-p.queue:
+			<-p.worker
+			go p.run(v)
 		case <-p.done:
 			return
 		}
+	}
+}
+
+func (p *pool) workerPrepare() {
+	p.worker = make(chan struct{}, p.maxWorker)
+	for i := p.maxWorker; i > 0; i-- {
+		p.worker <- struct{}{}
 	}
 }
 
@@ -62,14 +63,21 @@ func (p *pool) SetMaxWorker(size int64) {
 }
 
 func (p *pool) Map(f func(interface{}), vs []interface{}) {
-	p.worker = f
+	p.callFunc = f
 	p.queue = make(chan interface{})
 	p.restInQueue = int64(len(vs))
 	p.done = make(chan struct{})
+	p.workerPrepare()
 	go p.start(vs)
 	p.loop()
 }
 
+func (p *pool) Close() {
+	close(p.queue)
+	close(p.worker)
+}
+
 func NewPool(max int64) Pool {
-	return Pool{pool{maxWorker: max}}
+	p := Pool{pool{maxWorker: max}}
+	return p
 }
