@@ -9,4 +9,9 @@ data := []interface{}{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"
 pool.Map(f, data)
 pool.SetMaxWorker(2)
 pool.Map(f, data)
+fs := []func(interface{}){f1, f2, f1, f2, f1, f2, f1, f2, f1, f2, f1, f2, f1, f2}
+for i := len(data) - 1; i >= 0; i-- {
+    pool.Submit(fs[i], data[i])
+}
+pool.Wait()
 ```
