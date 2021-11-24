@@ -4,11 +4,15 @@ import (
 	"sync/atomic"
 )
 
+type queue struct {
+	callFunc func(interface{})
+	param    interface{}
+}
+
 type pool struct {
-	callFunc    func(interface{})
 	worker      chan struct{}
 	maxWorker   int64
-	queue       chan interface{}
+	queue       chan *queue
 	restInQueue int64
 	done        chan struct{}
 }
@@ -17,8 +21,8 @@ type Pool struct {
 	pool
 }
 
-func (p *pool) run(v interface{}) {
-	p.callFunc(v)
+func (p *pool) run(q *queue) {
+	q.callFunc(q.param)
 	p.worker <- struct{}{}
 	atomic.AddInt64(&p.restInQueue, -1)
 	if atomic.LoadInt64(&p.restInQueue) == 0 {
@@ -26,9 +30,18 @@ func (p *pool) run(v interface{}) {
 	}
 }
 
-func (p *pool) start(vs []interface{}) {
+func (p *pool) init() {
+	p.queue = make(chan *queue)
+	p.workerPrepare()
+}
+
+func (p *pool) put(f func(interface{}), v interface{}) {
+	p.queue <- &queue{callFunc: f, param: v}
+}
+
+func (p *pool) puts(f func(interface{}), vs []interface{}) {
 	for _, v := range vs {
-		p.queue <- v
+		p.put(f, v)
 	}
 }
 
@@ -60,15 +73,24 @@ func (p *pool) SetMaxWorker(size int64) {
 		size = 1
 	}
 	p.maxWorker = size
+	p.workerPrepare()
+
 }
 
 func (p *pool) Map(f func(interface{}), vs []interface{}) {
-	p.callFunc = f
-	p.queue = make(chan interface{})
-	p.restInQueue = int64(len(vs))
 	p.done = make(chan struct{})
-	p.workerPrepare()
-	go p.start(vs)
+	p.restInQueue = int64(len(vs))
+	go p.puts(f, vs)
+	p.loop()
+}
+
+func (p *pool) Submit(f func(interface{}), v interface{}) {
+	go p.put(f, v)
+	atomic.AddInt64(&p.restInQueue, 1)
+}
+
+func (p *pool) Wait() {
+	p.done = make(chan struct{})
 	p.loop()
 }
 
@@ -78,5 +100,7 @@ func (p *pool) Close() {
 }
 
 func NewPool(max int64) *Pool {
-	return &Pool{pool{maxWorker: max}}
+	p := &Pool{pool{maxWorker: max}}
+	p.init()
+	return p
 }
