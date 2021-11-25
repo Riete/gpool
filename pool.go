@@ -10,13 +10,10 @@ type task struct {
 }
 
 type pool struct {
-	worker    chan struct{}
-	maxWorker int64
-	task      chan *task
-	restTask  int64
-	done      chan struct{}
-	wait      chan struct{}
-	running   int64
+	worker   chan struct{}
+	task     chan *task
+	restTask int64
+	done     chan struct{}
 }
 
 type Pool struct {
@@ -44,13 +41,10 @@ func (p *pool) run(q *task) {
 	p.checkIsTaskDone()
 }
 
-func (p *pool) init() {
-	p.task = make(chan *task)
-	p.workerPrepare()
-}
-
-func (p *pool) putTask(f func(interface{}), v interface{}) {
-	p.task <- &task{f: f, param: v}
+func (p *pool) putTask(f func(interface{}), vs []interface{}) {
+	for _, v := range vs {
+		p.task <- &task{f: f, param: v}
+	}
 }
 
 func (p *pool) loop() {
@@ -60,54 +54,33 @@ func (p *pool) loop() {
 			p.getWorker()
 			go p.run(v)
 		case <-p.done:
-			close(p.wait)
 			return
 		}
 	}
 }
 
-func (p *pool) workerPrepare() {
-	p.worker = make(chan struct{}, p.maxWorker)
-	for i := p.maxWorker; i > 0; i-- {
+func (p *pool) workerPrepare(size int64) {
+	p.worker = make(chan struct{}, size)
+	for i := size; i > 0; i-- {
 		p.worker <- struct{}{}
 	}
 }
 
-func (p pool) Cap() int64 {
-	return p.maxWorker
-}
-
 func (p *pool) SetMaxWorker(size int64) {
-	if atomic.LoadInt64(&p.running) == 1 {
-		return
-	}
 	if size < 1 {
 		size = 1
 	}
-	p.maxWorker = size
-	p.workerPrepare()
+	p.workerPrepare(size)
 }
 
-func (p *pool) Submit(f func(interface{}), v interface{}) {
-	go p.putTask(f, v)
-	atomic.AddInt64(&p.restTask, 1)
+func (p *pool) Submit(f func(interface{}), vs []interface{}) {
+	go p.putTask(f, vs)
+	p.restTask += int64(len(vs))
 }
 
 func (p *pool) Run() {
-	atomic.SwapInt64(&p.running, 1)
 	p.done = make(chan struct{})
-	p.wait = make(chan struct{})
-	go p.loop()
-}
-
-func (p *pool) Wait() {
-	for {
-		select {
-		case <-p.wait:
-			atomic.SwapInt64(&p.running, 0)
-			return
-		}
-	}
+	p.loop()
 }
 
 func (p *pool) Close() {
@@ -115,8 +88,8 @@ func (p *pool) Close() {
 	close(p.worker)
 }
 
-func NewPool(max int64) *Pool {
-	p := &Pool{pool{maxWorker: max}}
-	p.init()
+func NewPool(size int64) *Pool {
+	p := &Pool{pool{task: make(chan *task)}}
+	p.workerPrepare(size)
 	return p
 }
