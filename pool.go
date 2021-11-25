@@ -10,13 +10,13 @@ type task struct {
 }
 
 type pool struct {
-	worker      chan struct{}
-	maxWorker   int64
-	task        chan *task
-	restInQueue int64
-	done        chan struct{}
-	wait        chan struct{}
-	running     int64
+	worker    chan struct{}
+	maxWorker int64
+	task      chan *task
+	restTask  int64
+	done      chan struct{}
+	wait      chan struct{}
+	running   int64
 }
 
 type Pool struct {
@@ -32,7 +32,7 @@ func (p *pool) putWorker() {
 }
 
 func (p *pool) checkIsTaskDone() {
-	if atomic.LoadInt64(&p.restInQueue) == 0 {
+	if atomic.LoadInt64(&p.restTask) == 0 {
 		close(p.done)
 	}
 }
@@ -40,7 +40,7 @@ func (p *pool) checkIsTaskDone() {
 func (p *pool) run(q *task) {
 	q.f(q.param)
 	p.putWorker()
-	atomic.AddInt64(&p.restInQueue, -1)
+	atomic.AddInt64(&p.restTask, -1)
 	p.checkIsTaskDone()
 }
 
@@ -60,7 +60,6 @@ func (p *pool) loop() {
 			p.getWorker()
 			go p.run(v)
 		case <-p.done:
-			atomic.SwapInt64(&p.running, 0)
 			close(p.wait)
 			return
 		}
@@ -91,7 +90,7 @@ func (p *pool) SetMaxWorker(size int64) {
 
 func (p *pool) Submit(f func(interface{}), v interface{}) {
 	go p.putTask(f, v)
-	atomic.AddInt64(&p.restInQueue, 1)
+	atomic.AddInt64(&p.restTask, 1)
 }
 
 func (p *pool) Run() {
@@ -105,6 +104,7 @@ func (p *pool) Wait() {
 	for {
 		select {
 		case <-p.wait:
+			atomic.SwapInt64(&p.running, 0)
 			return
 		}
 	}

@@ -18,7 +18,7 @@ func (p *poolWithFunc) putTask(f func(interface{}), vs []interface{}) {
 func (p *poolWithFunc) Run(vs []interface{}) {
 	p.done = make(chan struct{})
 	p.wait = make(chan struct{})
-	p.restInQueue = int64(len(vs))
+	p.restTask = int64(len(vs))
 	go p.putTask(p.pf, vs)
 	p.loop()
 }
