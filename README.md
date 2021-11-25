@@ -2,27 +2,30 @@
 
 ## Usage
 
-### pool.Map
+### Pool
 ```
-pool := gpool.NewPool(5)
-defer pool.Close()
-f := func(v interface{}) { fmt.Println(v) }
-data := []interface{}{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n"}
-pool.Map(f, data)
-pool.SetMaxWorker(2)
-pool.Map(f, data)
-```
+f1 := func(v interface{}) { time.Sleep(1 * time.Second); fmt.Println("f1 ", v) }
+f2 := func(v interface{}) { time.Sleep(2 * time.Second); fmt.Println("f2 ", v) }
+pool := NewPool(6)
 
-### pool.Submit
-```
-pool := gpool.NewPool(5)
 defer pool.Close()
-f1 := func(v interface{}) { fmt.Println("f1", v) }
-f2 := func(v interface{}) { fmt.Println("f2", v) }
+pool.Run()
 data := []interface{}{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n"}
-fs := []func(interface{}){f1, f2, f1, f2, f1, f2, f1, f2, f1, f2, f1, f2, f1, f2}
-for i := len(data) - 1; i >= 0; i-- {
-    pool.Submit(fs[i], data[i])
+for _, d := range data {
+    pool.Submit(f1, d)
+    pool.Submit(f2, d)
 }
 pool.Wait()
+```
+
+### PoolWithFunc
+```
+f := func(v interface{}) { time.Sleep(1 * time.Second); fmt.Println(v) }
+pool := NewPoolWithFunc(f, 2)
+defer pool.Close()
+data := []interface{}{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n"}
+data2 := []interface{}{"aa", "bb", "cc", "dd", "ee", "ff", "gg", "hh", "ii", "jj", "kk", "ll", "mm", "nn"}
+pool.Run(data)
+pool.SetMaxWorker(4)
+pool.Run(data2)
 ```
