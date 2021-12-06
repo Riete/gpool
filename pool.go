@@ -1,6 +1,7 @@
 package gpool
 
 import (
+	"log"
 	"sync/atomic"
 )
 
@@ -35,6 +36,11 @@ func (p *pool) checkIsTaskDone() {
 }
 
 func (p *pool) run(q *task) {
+	defer func() {
+		if err := recover(); err != nil {
+			log.Println(err)
+		}
+	}()
 	q.f(q.param)
 	p.putWorker()
 	atomic.AddInt64(&p.restTask, -1)
