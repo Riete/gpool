@@ -27,11 +27,16 @@ func (p Pool) Get() {
 	<-p.worker
 }
 
+func (p *Pool) close() {
+	close(p.done)
+	close(p.worker)
+}
+
 func (p *Pool) Put() {
 	p.worker <- struct{}{}
 	atomic.AddInt64(&p.total, -1)
 	if atomic.LoadInt64(&p.total) == 0 {
-		close(p.done)
+		p.close()
 	}
 }
 
