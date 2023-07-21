@@ -48,3 +48,23 @@ func NewPool(max, total int64) *Pool {
 	p.initWorker()
 	return p
 }
+
+type PoolWithFunc[T any] struct {
+	p *Pool
+	f func(T)
+}
+
+func NewPoolWithFunc[T any](max, total int64, f func(T)) *PoolWithFunc[T] {
+	return &PoolWithFunc[T]{p: NewPool(max, total), f: f}
+}
+
+func (p *PoolWithFunc[T]) Run(v []T) {
+	for _, i := range v {
+		p.p.Get()
+		go func(i T) {
+			defer p.p.Put()
+			p.f(i)
+		}(i)
+	}
+	<-p.p.Done()
+}
