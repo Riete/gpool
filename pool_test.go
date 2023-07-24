@@ -45,6 +45,6 @@ func TestPoolWithFunc(t *testing.T) {
 		fmt.Println(i.a, i.b)
 		time.Sleep(time.Second)
 	}
-	p := NewPoolWithFunc(5, int64(len(tts)), f)
-	p.Run(tts)
+	p := NewPoolWithFunc(5, tts, f)
+	p.Run()
 }
