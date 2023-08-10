@@ -69,3 +69,33 @@ func (p *PoolWithFunc[T]) Run() {
 	}
 	<-p.p.Done()
 }
+
+type LongTermPool struct {
+	worker chan struct{}
+	max    int64
+}
+
+func (p *LongTermPool) initWorker() {
+	p.worker = make(chan struct{}, p.max)
+	for i := p.max; i > 0; i-- {
+		p.worker <- struct{}{}
+	}
+}
+
+func (p LongTermPool) Get() {
+	<-p.worker
+}
+
+func (p *LongTermPool) Close() {
+	close(p.worker)
+}
+
+func (p *LongTermPool) Put() {
+	p.worker <- struct{}{}
+}
+
+func NewLongTermPool(max int64) *LongTermPool {
+	p := &LongTermPool{max: max}
+	p.initWorker()
+	return p
+}
