@@ -1,101 +1,79 @@
 package gpool
 
 import (
-	"sync/atomic"
+	"sync"
+	"time"
+
+	"github.com/juju/ratelimit"
 )
 
-type Pool struct {
-	worker chan struct{}
-	done   chan struct{}
-	total  int64 // how many task to be run
-	max    int64
+type Pool[T any] struct {
+	limiter *ratelimit.Bucket
+	qps     int64
+	burst   int64
+	f       func(T)
+	rw      sync.RWMutex
 }
 
-func (p *Pool) initWorker() {
-	p.done = make(chan struct{})
-	p.worker = make(chan struct{}, p.max)
-	for i := p.max; i > 0; i-- {
-		p.worker <- struct{}{}
-	}
-}
-
-func (p Pool) Done() chan struct{} {
-	return p.done
-}
-
-func (p Pool) Get() {
-	<-p.worker
-}
-
-func (p *Pool) close() {
-	close(p.done)
-	close(p.worker)
-}
-
-func (p *Pool) Put() {
-	p.worker <- struct{}{}
-	atomic.AddInt64(&p.total, -1)
-	if atomic.LoadInt64(&p.total) == 0 {
-		p.close()
-	}
-}
-
-func NewPool(max, total int64) *Pool {
-	if max > total {
-		max = total
-	}
-	p := &Pool{max: max, total: total}
-	p.initWorker()
-	return p
-}
-
-type PoolWithFunc[T any] struct {
-	p *Pool
-	f func(T)
-	v []T
-}
-
-func NewPoolWithFunc[T any](max int64, v []T, f func(T)) *PoolWithFunc[T] {
-	return &PoolWithFunc[T]{p: NewPool(max, int64(len(v))), v: v, f: f}
-}
-
-func (p *PoolWithFunc[T]) Run() {
-	for _, i := range p.v {
-		p.p.Get()
+func (p *Pool[T]) run(wg *sync.WaitGroup, v []T, onPanic func(T, any)) {
+	for _, i := range v {
 		go func(i T) {
-			defer p.p.Put()
+			defer wg.Done()
+			defer func() {
+				if err := recover(); err != nil && onPanic != nil {
+					onPanic(i, err)
+				}
+			}()
 			p.f(i)
 		}(i)
 	}
-	<-p.p.Done()
 }
 
-type LongTermPool struct {
-	worker chan struct{}
-	max    int64
+func (p *Pool[T]) GetQPSLimit() (int64, int64) {
+	return p.qps, p.burst
 }
 
-func (p *LongTermPool) initWorker() {
-	p.worker = make(chan struct{}, p.max)
-	for i := p.max; i > 0; i-- {
-		p.worker <- struct{}{}
+func (p *Pool[T]) SetQPSLimit(qps, burst int64) {
+	p.rw.Lock()
+	defer p.rw.Unlock()
+	if qps > burst {
+		qps = burst
 	}
+	p.qps = qps
+	p.burst = burst
+	p.limiter = ratelimit.NewBucketWithRate(float64(qps), burst)
 }
 
-func (p LongTermPool) Get() {
-	<-p.worker
+func (p *Pool[T]) Run(v []T, onPanic func(T, any)) {
+	p.rw.RLock()
+	defer p.rw.RUnlock()
+	wg := &sync.WaitGroup{}
+	total := len(v)
+	wg.Add(total)
+	start := 0
+	next := 0
+	for {
+		tokens := int(p.limiter.TakeAvailable(p.burst))
+		if tokens < 1 {
+			time.Sleep(time.Second)
+			continue
+		}
+		next = start + tokens
+		if next > total {
+			next = total
+		}
+		p.run(wg, v[start:next], onPanic)
+		if next == total {
+			break
+		}
+		start = next
+	}
+	wg.Wait()
 }
 
-func (p *LongTermPool) Close() {
-	close(p.worker)
-}
-
-func (p *LongTermPool) Put() {
-	p.worker <- struct{}{}
-}
-
-func NewLongTermPool(max int64) *LongTermPool {
-	p := &LongTermPool{max: max}
-	p.initWorker()
+// New qps is normal QPS and allows bursts of up to burst to exceed the normal QPS,
+func New[T any](qps, burst int64, f func(T)) *Pool[T] {
+	p := &Pool[T]{f: f}
+	p.SetQPSLimit(qps, burst)
 	return p
 }
