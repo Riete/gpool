@@ -1,12 +1,13 @@
 package gpool
 
 import (
+	"fmt"
 	"log"
 	"testing"
 	"time"
 )
 
-var limiter = NewLimiter(14, 20)
+var limiter = NewLimiter(1, 1)
 
 func TestPool(t *testing.T) {
 	p := NewPool(limiter)
@@ -20,7 +21,6 @@ func TestPool(t *testing.T) {
 	}
 	f := func(i any) {
 		log.Println(i)
-		time.Sleep(time.Second)
 	}
 	go p.Run(f, items, nil)
 	p.Run(f, items2, nil)
@@ -35,5 +35,11 @@ func TestGenericPool(t *testing.T) {
 	for i := 1; i < 101; i++ {
 		items = append(items, i)
 	}
+	go func() {
+		time.Sleep(time.Second)
+		p.SetCapacity(5, 5)
+		p.SetBurst(3)
+		fmt.Println(p.Limit(), p.Burst())
+	}()
 	p.Run(items, nil)
 }
