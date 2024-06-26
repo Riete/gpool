@@ -43,7 +43,6 @@ func (l *Limiter) SetCapacity(limit int, burst int) {
 
 func (l *Limiter) Wait() {
 	_ = l.limiter.Wait(context.Background())
-	l.limiter.Tokens()
 }
 
 // NewLimiter limit is normal QPS and allows bursts of up to burst to exceed the normal QPS,

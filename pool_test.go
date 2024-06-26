@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-var limiter = NewLimiter(1, 1)
+var limiter = NewLimiter(2, 10)
 
 func TestPool(t *testing.T) {
 	p := NewPool(limiter)
