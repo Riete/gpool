@@ -39,9 +39,9 @@ type ConcurrentPool struct {
 	*Limiter
 }
 
-func (c *ConcurrentPool) run(max *int64, wg *sync.WaitGroup, f func(any), v any, onPanic func(any, any)) {
+func (c *ConcurrentPool) run(idle *atomic.Int64, wg *sync.WaitGroup, f func(any), v any, onPanic func(any, any)) {
 	defer wg.Done()
-	defer atomic.AddInt64(max, 1)
+	defer idle.Add(1)
 	defer func() {
 		if err := recover(); err != nil && onPanic != nil {
 			onPanic(v, err)
@@ -54,12 +54,14 @@ func (c *ConcurrentPool) run(max *int64, wg *sync.WaitGroup, f func(any), v any,
 func (c *ConcurrentPool) Run(max int64, f func(any), v []any, onPanic func(any, any)) {
 	wg := &sync.WaitGroup{}
 	wg.Add(len(v))
+	idle := new(atomic.Int64)
+	idle.Store(max)
 	for _, i := range v {
 		for {
 			c.Wait()
-			if atomic.LoadInt64(&max) > 0 {
-				atomic.AddInt64(&max, -1)
-				go c.run(&max, wg, f, i, onPanic)
+			if idle.Load() > 0 {
+				idle.Add(-1)
+				go c.run(idle, wg, f, i, onPanic)
 				break
 			}
 			time.Sleep(time.Second)
