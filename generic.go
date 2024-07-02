@@ -3,7 +3,6 @@ package gpool
 import (
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // GenericRateLimiterPool is generic implementation of RateLimiterPool
@@ -67,7 +66,6 @@ func (g *GenericConcurrentPool[T]) Run(max int64, v []T, onPanic func(T, any)) {
 				go g.run(idle, wg, i, onPanic)
 				break
 			}
-			time.Sleep(time.Second)
 		}
 	}
 	wg.Wait()

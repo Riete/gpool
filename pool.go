@@ -3,7 +3,6 @@ package gpool
 import (
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 type RateLimiterPool struct {
@@ -64,7 +63,6 @@ func (c *ConcurrentPool) Run(max int64, f func(any), v []any, onPanic func(any, 
 				go c.run(idle, wg, f, i, onPanic)
 				break
 			}
-			time.Sleep(time.Second)
 		}
 	}
 	wg.Wait()
