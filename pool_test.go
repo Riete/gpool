@@ -10,7 +10,7 @@ import (
 var limiter = NewLimiter(10, 10)
 
 func TestLimiterPool(t *testing.T) {
-	p := NewLimiterPool(limiter)
+	p := NewRateLimiterPool(limiter)
 	var items []any
 	for i := 1; i < 101; i++ {
 		items = append(items, i)
@@ -28,7 +28,7 @@ func TestLimiterPool(t *testing.T) {
 }
 
 func TestGenericLimiterPool(t *testing.T) {
-	p := NewGenericLimiterPool[int](limiter, func(i int) {
+	p := NewGenericRateLimiterPool[int](limiter, func(i int) {
 		log.Println(i)
 		time.Sleep(time.Second)
 	})
