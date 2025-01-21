@@ -1,6 +1,7 @@
 package gpool
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 )
@@ -20,11 +21,20 @@ func (l *RateLimiterPool) run(wg *sync.WaitGroup, f func(any), v any, onPanic fu
 }
 
 func (l *RateLimiterPool) Run(f func(any), v []any, onPanic func(any, any)) {
+	l.RunContext(context.Background(), f, v, onPanic)
+}
+
+func (l *RateLimiterPool) RunContext(ctx context.Context, f func(any), v []any, onPanic func(any, any)) {
 	wg := &sync.WaitGroup{}
 	wg.Add(len(v))
 	for _, i := range v {
-		l.Wait()
-		go l.run(wg, f, i, onPanic)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			l.Wait()
+			go l.run(wg, f, i, onPanic)
+		}
 	}
 	wg.Wait()
 }
@@ -51,17 +61,26 @@ func (c *ConcurrentPool) run(idle *atomic.Int64, wg *sync.WaitGroup, f func(any)
 
 // Run max is number of maximum concurrency
 func (c *ConcurrentPool) Run(max int64, f func(any), v []any, onPanic func(any, any)) {
+	c.RunContext(context.Background(), max, f, v, onPanic)
+}
+
+func (c *ConcurrentPool) RunContext(ctx context.Context, max int64, f func(any), v []any, onPanic func(any, any)) {
 	wg := &sync.WaitGroup{}
 	wg.Add(len(v))
 	idle := new(atomic.Int64)
 	idle.Store(max)
 	for _, i := range v {
 		for {
-			c.Wait()
-			if idle.Load() > 0 {
-				idle.Add(-1)
-				go c.run(idle, wg, f, i, onPanic)
-				break
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				c.Wait()
+				if idle.Load() > 0 {
+					idle.Add(-1)
+					go c.run(idle, wg, f, i, onPanic)
+					break
+				}
 			}
 		}
 	}
