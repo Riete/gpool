@@ -8,6 +8,7 @@ import (
 
 type Limiter struct {
 	limiter *rate.Limiter
+	wait    chan struct{}
 }
 
 func (l *Limiter) Limit() int {
@@ -40,15 +41,15 @@ func (l *Limiter) SetCapacity(limit int, burst int) {
 	l.SetLimit(limit)
 }
 
-func (l *Limiter) Wait() {
-	_ = l.limiter.Wait(context.Background())
-}
-
-func (l *Limiter) WaitN(n int) {
-	_ = l.limiter.WaitN(context.Background(), min(n, l.Burst()))
+func (l *Limiter) Wait() chan struct{} {
+	go func() {
+		_ = l.limiter.Wait(context.Background())
+		l.wait <- struct{}{}
+	}()
+	return l.wait
 }
 
 // NewLimiter limit is normal QPS and allows bursts of up to burst to exceed the normal QPS,
 func NewLimiter(limit, burst int) *Limiter {
-	return &Limiter{limiter: rate.NewLimiter(rate.Limit(min(limit, burst)), burst)}
+	return &Limiter{limiter: rate.NewLimiter(rate.Limit(min(limit, burst)), burst), wait: make(chan struct{})}
 }

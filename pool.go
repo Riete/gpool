@@ -31,8 +31,7 @@ func (l *RateLimiterPool) RunContext(ctx context.Context, f func(any), v []any, 
 		select {
 		case <-ctx.Done():
 			return
-		default:
-			l.Wait()
+		case <-l.Wait():
 			go l.run(wg, f, i, onPanic)
 		}
 	}
@@ -74,8 +73,7 @@ func (c *ConcurrentPool) RunContext(ctx context.Context, max int64, f func(any),
 			select {
 			case <-ctx.Done():
 				return
-			default:
-				c.Wait()
+			case <-c.Wait():
 				if idle.Load() > 0 {
 					idle.Add(-1)
 					go c.run(idle, wg, f, i, onPanic)

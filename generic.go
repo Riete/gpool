@@ -32,8 +32,7 @@ func (g *GenericRateLimiterPool[T]) RunContext(ctx context.Context, v []T, onPan
 	for _, i := range v {
 		select {
 		case <-ctx.Done():
-		default:
-			g.Wait()
+		case <-g.Wait():
 			go g.run(wg, i, onPanic)
 		}
 	}
@@ -75,8 +74,7 @@ func (g *GenericConcurrentPool[T]) RunContext(ctx context.Context, max int64, v 
 		for {
 			select {
 			case <-ctx.Done():
-			default:
-				g.Wait()
+			case <-g.Wait():
 				if idle.Load() > 0 {
 					idle.Add(-1)
 					go g.run(idle, wg, i, onPanic)
