@@ -63,6 +63,14 @@ func (c *ConcurrentPool) Run(max int64, f func(any), v []any, onPanic func(any, 
 	c.RunContext(context.Background(), max, f, v, onPanic)
 }
 
+func (c *ConcurrentPool) RunMax(f func(any), v []any, onPanic func(any, any)) {
+	c.Run(int64(c.Burst()), f, v, onPanic)
+}
+
+func (c *ConcurrentPool) RunMaxContext(ctx context.Context, f func(any), v []any, onPanic func(any, any)) {
+	c.RunContext(ctx, int64(c.Burst()), f, v, onPanic)
+}
+
 func (c *ConcurrentPool) RunContext(ctx context.Context, max int64, f func(any), v []any, onPanic func(any, any)) {
 	wg := &sync.WaitGroup{}
 	wg.Add(len(v))
