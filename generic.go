@@ -86,9 +86,11 @@ func (g *GenericConcurrentPool[T]) RunContext(ctx context.Context, max int64, v 
 				if idle.Load() > 0 {
 					idle.Add(-1)
 					go g.run(idle, wg, i, onPanic)
-					break
+				} else {
+					continue
 				}
 			}
+			break
 		}
 	}
 	wg.Wait()

@@ -85,9 +85,11 @@ func (c *ConcurrentPool) RunContext(ctx context.Context, max int64, f func(any),
 				if idle.Load() > 0 {
 					idle.Add(-1)
 					go c.run(idle, wg, f, i, onPanic)
-					break
+				} else {
+					continue
 				}
 			}
+			break
 		}
 	}
 	wg.Wait()
