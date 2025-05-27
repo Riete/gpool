@@ -3,7 +3,6 @@ package gpool
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 )
 
 type RateLimiterPool struct {
@@ -47,10 +46,10 @@ type ConcurrentPool struct {
 	*Limiter
 }
 
-func (c *ConcurrentPool) run(idle *atomic.Int64, wg *sync.WaitGroup, f func(any), v any, onPanic func(any, any)) {
-	defer wg.Done()
-	defer idle.Add(1)
+func (c *ConcurrentPool) run(idle chan struct{}, wg *sync.WaitGroup, f func(any), v any, onPanic func(any, any)) {
 	defer func() {
+		idle <- struct{}{}
+		wg.Done()
 		if err := recover(); err != nil && onPanic != nil {
 			onPanic(v, err)
 		}
@@ -74,22 +73,18 @@ func (c *ConcurrentPool) RunMaxContext(ctx context.Context, f func(any), v []any
 func (c *ConcurrentPool) RunContext(ctx context.Context, max int64, f func(any), v []any, onPanic func(any, any)) {
 	wg := &sync.WaitGroup{}
 	wg.Add(len(v))
-	idle := new(atomic.Int64)
-	idle.Store(max)
+	idle := make(chan struct{}, max)
+	defer close(idle)
+	for i := 0; i < int(max); i++ {
+		idle <- struct{}{}
+	}
 	for _, i := range v {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-c.Wait():
-				if idle.Load() > 0 {
-					idle.Add(-1)
-					go c.run(idle, wg, f, i, onPanic)
-				} else {
-					continue
-				}
-			}
-			break
+		<-idle
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.Wait():
+			go c.run(idle, wg, f, i, onPanic)
 		}
 	}
 	wg.Wait()
