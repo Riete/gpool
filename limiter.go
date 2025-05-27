@@ -11,34 +11,13 @@ type Limiter struct {
 	wait    chan struct{}
 }
 
-func (l *Limiter) Limit() int {
-	return int(l.limiter.Limit())
-}
-
-func (l *Limiter) Burst() int {
+func (l *Limiter) Capacity() int {
 	return l.limiter.Burst()
 }
 
-func (l *Limiter) Capacity() (int, int) {
-	return l.Limit(), l.Burst()
-}
-
-// SetLimit if new limit > burst then set new limit to burst
-func (l *Limiter) SetLimit(limit int) {
-	l.limiter.SetLimit(rate.Limit(min(limit, l.Burst())))
-}
-
-// SetBurst if new burst < limit then set limit to new burst
-func (l *Limiter) SetBurst(burst int) {
-	if burst < l.Limit() {
-		l.SetLimit(burst)
-	}
-	l.limiter.SetBurst(burst)
-}
-
-func (l *Limiter) SetCapacity(limit int, burst int) {
-	l.SetBurst(burst)
-	l.SetLimit(limit)
+func (l *Limiter) SetCapacity(max int) {
+	l.limiter.SetLimit(rate.Limit(max))
+	l.limiter.SetBurst(max)
 }
 
 func (l *Limiter) Wait() chan struct{} {
@@ -49,7 +28,7 @@ func (l *Limiter) Wait() chan struct{} {
 	return l.wait
 }
 
-// NewLimiter limit is normal QPS and allows bursts of up to burst to exceed the normal QPS,
-func NewLimiter(limit, burst int) *Limiter {
-	return &Limiter{limiter: rate.NewLimiter(rate.Limit(min(limit, burst)), burst), wait: make(chan struct{})}
+// NewLimiter max is maximum token rate
+func NewLimiter(max int) *Limiter {
+	return &Limiter{limiter: rate.NewLimiter(rate.Limit(max), max), wait: make(chan struct{})}
 }

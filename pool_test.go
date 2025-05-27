@@ -1,16 +1,13 @@
 package gpool
 
 import (
-	"fmt"
 	"log"
 	"testing"
 	"time"
 )
 
-var limiter = NewLimiter(10, 10)
-
 func TestLimiterPool(t *testing.T) {
-	p := NewRateLimiterPool(limiter)
+	p := NewRateLimiterPool(10)
 	var items []any
 	for i := 1; i < 101; i++ {
 		items = append(items, i)
@@ -28,7 +25,7 @@ func TestLimiterPool(t *testing.T) {
 }
 
 func TestGenericLimiterPool(t *testing.T) {
-	p := NewGenericRateLimiterPool[int](limiter, func(i int) {
+	p := NewGenericRateLimiterPool[int](10, func(i int) {
 		log.Println(i)
 		time.Sleep(time.Second)
 	})
@@ -38,15 +35,13 @@ func TestGenericLimiterPool(t *testing.T) {
 	}
 	go func() {
 		time.Sleep(time.Second)
-		p.SetCapacity(5, 5)
-		p.SetBurst(3)
-		fmt.Println(p.Limit(), p.Burst())
+		p.SetCapacity(5)
 	}()
 	p.Run(items, nil)
 }
 
 func TestConcurrentPool(t *testing.T) {
-	p := NewConcurrentPool(limiter)
+	p := NewConcurrentPool(10)
 	var items []any
 	for i := 1; i < 101; i++ {
 		items = append(items, i)
@@ -64,7 +59,7 @@ func TestConcurrentPool(t *testing.T) {
 }
 
 func TestGenericConcurrentPool(t *testing.T) {
-	p := NewGenericConcurrentPool(limiter, func(i int) {
+	p := NewGenericConcurrentPool(10, func(i int) {
 		log.Println(i)
 		time.Sleep(3 * time.Second)
 	})

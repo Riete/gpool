@@ -38,8 +38,8 @@ func (g *GenericRateLimiterPool[T]) RunContext(ctx context.Context, v []T, onPan
 	wg.Wait()
 }
 
-func NewGenericRateLimiterPool[T any](l *Limiter, f func(T)) *GenericRateLimiterPool[T] {
-	return &GenericRateLimiterPool[T]{l, f}
+func NewGenericRateLimiterPool[T any](capacity int, f func(T)) *GenericRateLimiterPool[T] {
+	return &GenericRateLimiterPool[T]{NewLimiter(capacity), f}
 }
 
 // GenericConcurrentPool is generic implementation of ConcurrentPool
@@ -60,24 +60,24 @@ func (g *GenericConcurrentPool[T]) run(idle chan struct{}, wg *sync.WaitGroup, v
 }
 
 // Run max is number of maximum concurrency
-func (g *GenericConcurrentPool[T]) Run(max int64, v []T, onPanic func(T, any)) {
+func (g *GenericConcurrentPool[T]) Run(max int, v []T, onPanic func(T, any)) {
 	g.RunContext(context.Background(), max, v, onPanic)
 }
 
 func (g *GenericConcurrentPool[T]) RunMax(v []T, onPanic func(T, any)) {
-	g.Run(int64(g.Burst()), v, onPanic)
+	g.Run(g.Capacity(), v, onPanic)
 }
 
 func (g *GenericConcurrentPool[T]) RunMaxContext(ctx context.Context, v []T, onPanic func(T, any)) {
-	g.RunContext(ctx, int64(g.Burst()), v, onPanic)
+	g.RunContext(ctx, g.Capacity(), v, onPanic)
 }
 
-func (g *GenericConcurrentPool[T]) RunContext(ctx context.Context, max int64, v []T, onPanic func(T, any)) {
+func (g *GenericConcurrentPool[T]) RunContext(ctx context.Context, max int, v []T, onPanic func(T, any)) {
 	wg := &sync.WaitGroup{}
 	wg.Add(len(v))
 	idle := make(chan struct{}, max)
 	defer close(idle)
-	for i := 0; i < int(max); i++ {
+	for i := 0; i < max; i++ {
 		idle <- struct{}{}
 	}
 	for _, i := range v {
@@ -92,6 +92,6 @@ func (g *GenericConcurrentPool[T]) RunContext(ctx context.Context, max int64, v 
 	wg.Wait()
 }
 
-func NewGenericConcurrentPool[T any](l *Limiter, f func(T)) *GenericConcurrentPool[T] {
-	return &GenericConcurrentPool[T]{l, f}
+func NewGenericConcurrentPool[T any](capacity int, f func(T)) *GenericConcurrentPool[T] {
+	return &GenericConcurrentPool[T]{NewLimiter(capacity), f}
 }

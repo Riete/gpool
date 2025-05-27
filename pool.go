@@ -37,8 +37,8 @@ func (l *RateLimiterPool) RunContext(ctx context.Context, f func(any), v []any, 
 	wg.Wait()
 }
 
-func NewRateLimiterPool(l *Limiter) *RateLimiterPool {
-	return &RateLimiterPool{l}
+func NewRateLimiterPool(capacity int) *RateLimiterPool {
+	return &RateLimiterPool{NewLimiter(capacity)}
 }
 
 // ConcurrentPool is different from RateLimiterPool it can limit the maximum concurrency for each task
@@ -58,24 +58,24 @@ func (c *ConcurrentPool) run(idle chan struct{}, wg *sync.WaitGroup, f func(any)
 }
 
 // Run max is number of maximum concurrency
-func (c *ConcurrentPool) Run(max int64, f func(any), v []any, onPanic func(any, any)) {
+func (c *ConcurrentPool) Run(max int, f func(any), v []any, onPanic func(any, any)) {
 	c.RunContext(context.Background(), max, f, v, onPanic)
 }
 
 func (c *ConcurrentPool) RunMax(f func(any), v []any, onPanic func(any, any)) {
-	c.Run(int64(c.Burst()), f, v, onPanic)
+	c.Run(c.Capacity(), f, v, onPanic)
 }
 
 func (c *ConcurrentPool) RunMaxContext(ctx context.Context, f func(any), v []any, onPanic func(any, any)) {
-	c.RunContext(ctx, int64(c.Burst()), f, v, onPanic)
+	c.RunContext(ctx, c.Capacity(), f, v, onPanic)
 }
 
-func (c *ConcurrentPool) RunContext(ctx context.Context, max int64, f func(any), v []any, onPanic func(any, any)) {
+func (c *ConcurrentPool) RunContext(ctx context.Context, max int, f func(any), v []any, onPanic func(any, any)) {
 	wg := &sync.WaitGroup{}
 	wg.Add(len(v))
 	idle := make(chan struct{}, max)
 	defer close(idle)
-	for i := 0; i < int(max); i++ {
+	for i := 0; i < max; i++ {
 		idle <- struct{}{}
 	}
 	for _, i := range v {
@@ -90,6 +90,6 @@ func (c *ConcurrentPool) RunContext(ctx context.Context, max int64, f func(any),
 	wg.Wait()
 }
 
-func NewConcurrentPool(l *Limiter) *ConcurrentPool {
-	return &ConcurrentPool{l}
+func NewConcurrentPool(capacity int) *ConcurrentPool {
+	return &ConcurrentPool{NewLimiter(capacity)}
 }
