@@ -10,8 +10,8 @@ type RateLimiterPool struct {
 }
 
 func (l *RateLimiterPool) run(wg *sync.WaitGroup, f func(any), v any, onPanic func(any, any)) {
-	defer wg.Done()
 	defer func() {
+		wg.Done()
 		if err := recover(); err != nil && onPanic != nil {
 			onPanic(v, err)
 		}

@@ -12,8 +12,8 @@ type GenericRateLimiterPool[T any] struct {
 }
 
 func (g *GenericRateLimiterPool[T]) run(wg *sync.WaitGroup, v T, onPanic func(T, any)) {
-	defer wg.Done()
 	defer func() {
+		wg.Done()
 		if err := recover(); err != nil && onPanic != nil {
 			onPanic(v, err)
 		}
@@ -31,6 +31,7 @@ func (g *GenericRateLimiterPool[T]) RunContext(ctx context.Context, v []T, onPan
 	for _, i := range v {
 		select {
 		case <-ctx.Done():
+			return
 		case <-g.Wait():
 			go g.run(wg, i, onPanic)
 		}
