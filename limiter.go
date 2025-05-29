@@ -6,29 +6,29 @@ import (
 	"golang.org/x/time/rate"
 )
 
-type Limiter struct {
-	limiter *rate.Limiter
-	wait    chan struct{}
+type limiter struct {
+	rl *rate.Limiter
+	w  chan struct{}
 }
 
-func (l *Limiter) Capacity() int {
-	return l.limiter.Burst()
+func (l *limiter) capacity() int {
+	return l.rl.Burst()
 }
 
-func (l *Limiter) SetCapacity(max int) {
-	l.limiter.SetLimit(rate.Limit(max))
-	l.limiter.SetBurst(max)
+func (l *limiter) setCapacity(max int) {
+	l.rl.SetLimit(rate.Limit(max))
+	l.rl.SetBurst(max)
 }
 
-func (l *Limiter) Wait() chan struct{} {
+func (l *limiter) wait() chan struct{} {
 	go func() {
-		_ = l.limiter.Wait(context.Background())
-		l.wait <- struct{}{}
+		_ = l.rl.Wait(context.Background())
+		l.w <- struct{}{}
 	}()
-	return l.wait
+	return l.w
 }
 
-// NewLimiter max is maximum token rate
-func NewLimiter(max int) *Limiter {
-	return &Limiter{limiter: rate.NewLimiter(rate.Limit(max), max), wait: make(chan struct{})}
+// newLimiter max is the maximum token rate
+func newLimiter(max int) *limiter {
+	return &limiter{rl: rate.NewLimiter(rate.Limit(max), max), w: make(chan struct{})}
 }

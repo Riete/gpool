@@ -5,91 +5,138 @@ import (
 	"sync"
 )
 
-type RateLimiterPool struct {
-	*Limiter
+// Task
+// limit is the maximum concurrency it should not exceed the Pool.Capacity
+// runtime value will be set to min(limit, Pool.Capacity), zero means no limit
+type Task[T any] struct {
+	ctx     context.Context
+	f       func(T)
+	params  []T
+	limit   int
+	onPanic func(T, any)
+	wg      *sync.WaitGroup
 }
 
-func (l *RateLimiterPool) run(wg *sync.WaitGroup, f func(any), v any, onPanic func(any, any)) {
-	defer func() {
-		wg.Done()
-		if err := recover(); err != nil && onPanic != nil {
-			onPanic(v, err)
-		}
-	}()
-	f(v)
+func (t *Task[T]) done() {
+	t.wg.Done()
 }
 
-func (l *RateLimiterPool) Run(f func(any), v []any, onPanic func(any, any)) {
-	l.RunContext(context.Background(), f, v, onPanic)
+func NewTask[T any](f func(T), params []T, limit int, onPanic func(T, any)) *Task[T] {
+	return NewTaskContext[T](context.Background(), f, params, limit, onPanic)
 }
 
-func (l *RateLimiterPool) RunContext(ctx context.Context, f func(any), v []any, onPanic func(any, any)) {
-	wg := new(sync.WaitGroup)
-	for _, i := range v {
+func NewTaskContext[T any](ctx context.Context, f func(T), params []T, limit int, onPanic func(T, any)) *Task[T] {
+	return &Task[T]{ctx: ctx, f: f, params: params, limit: limit, onPanic: onPanic}
+}
+
+type Pool[T any] struct {
+	limiter *limiter
+	task    chan *Task[T]
+	stop    chan struct{}
+	once    sync.Once
+}
+
+func (p *Pool[T]) Capacity() int {
+	return p.limiter.capacity()
+}
+
+func (p *Pool[T]) SetCapacity(max int) {
+	p.limiter.setCapacity(max)
+}
+
+func (p *Pool[T]) start() {
+	for {
 		select {
-		case <-ctx.Done():
+		case <-p.stop:
 			return
-		case <-l.Wait():
-			wg.Add(1)
-			go l.run(wg, f, i, onPanic)
+		case task := <-p.task:
+			go p.dispatch(task)
 		}
 	}
-	wg.Wait()
 }
 
-func NewRateLimiterPool(capacity int) *RateLimiterPool {
-	return &RateLimiterPool{NewLimiter(capacity)}
+func (p *Pool[T]) Stop() {
+	p.once.Do(func() {
+		close(p.stop)
+	})
 }
 
-// ConcurrentPool is different from RateLimiterPool it can limit the maximum concurrency for each task
-type ConcurrentPool struct {
-	*Limiter
+func (p *Pool[T]) dispatch(task *Task[T]) {
+	if task.limit > 0 {
+		p.limitedRun(task)
+	} else {
+		p.unlimitedRun(task)
+	}
 }
 
-func (c *ConcurrentPool) run(idle chan struct{}, wg *sync.WaitGroup, f func(any), v any, onPanic func(any, any)) {
+func (p *Pool[T]) run(wg *sync.WaitGroup, idle chan struct{}, task *Task[T], param T) {
 	defer func() {
-		idle <- struct{}{}
 		wg.Done()
-		if err := recover(); err != nil && onPanic != nil {
-			onPanic(v, err)
+		if task.limit > 0 {
+			idle <- struct{}{}
+		}
+		if err := recover(); err != nil && task.onPanic != nil {
+			task.onPanic(param, err)
 		}
 	}()
-	f(v)
+	task.f(param)
 }
 
-// Run max is number of maximum concurrency
-func (c *ConcurrentPool) Run(max int, f func(any), v []any, onPanic func(any, any)) {
-	c.RunContext(context.Background(), max, f, v, onPanic)
-}
-
-func (c *ConcurrentPool) RunMax(f func(any), v []any, onPanic func(any, any)) {
-	c.Run(c.Capacity(), f, v, onPanic)
-}
-
-func (c *ConcurrentPool) RunMaxContext(ctx context.Context, f func(any), v []any, onPanic func(any, any)) {
-	c.RunContext(ctx, c.Capacity(), f, v, onPanic)
-}
-
-func (c *ConcurrentPool) RunContext(ctx context.Context, max int, f func(any), v []any, onPanic func(any, any)) {
+// limitedRun concurrency mode, the maximum concurrency is min(Task.limit, Capacity)
+func (p *Pool[T]) limitedRun(task *Task[T]) {
+	defer task.done()
 	wg := new(sync.WaitGroup)
-	idle := make(chan struct{}, max)
+	limit := min(task.limit, p.Capacity())
+	idle := make(chan struct{}, limit)
 	defer close(idle)
-	for i := 0; i < max; i++ {
+	for i := 0; i < limit; i++ {
 		idle <- struct{}{}
 	}
-	for _, i := range v {
+	for _, param := range task.params {
 		<-idle
 		select {
-		case <-ctx.Done():
+		case <-task.ctx.Done():
 			return
-		case <-c.Wait():
+		case <-p.limiter.wait():
 			wg.Add(1)
-			go c.run(idle, wg, f, i, onPanic)
+			go p.run(wg, idle, task, param)
 		}
 	}
 	wg.Wait()
 }
 
-func NewConcurrentPool(capacity int) *ConcurrentPool {
-	return &ConcurrentPool{NewLimiter(capacity)}
+// unlimitedRun qps mode, the maximum qps is Capacity
+func (p *Pool[T]) unlimitedRun(task *Task[T]) {
+	defer task.done()
+	wg := new(sync.WaitGroup)
+	for _, param := range task.params {
+		select {
+		case <-task.ctx.Done():
+			return
+		case <-p.limiter.wait():
+			wg.Add(1)
+			go p.run(wg, nil, task, param)
+		}
+	}
+	wg.Wait()
+}
+
+func (p *Pool[T]) Submit(tasks ...*Task[T]) *sync.WaitGroup {
+	wg := new(sync.WaitGroup)
+	wg.Add(len(tasks))
+	for _, task := range tasks {
+		task.wg = wg
+		p.task <- task
+	}
+	return wg
+}
+
+func NewPool[T any](capacity int) *Pool[T] {
+	p := &Pool[T]{
+		limiter: newLimiter(capacity),
+		task:    make(chan *Task[T]),
+		stop:    make(chan struct{}),
+	}
+	go p.start()
+	return p
 }
