@@ -24,13 +24,13 @@ func (l *RateLimiterPool) Run(f func(any), v []any, onPanic func(any, any)) {
 }
 
 func (l *RateLimiterPool) RunContext(ctx context.Context, f func(any), v []any, onPanic func(any, any)) {
-	wg := &sync.WaitGroup{}
-	wg.Add(len(v))
+	wg := new(sync.WaitGroup)
 	for _, i := range v {
 		select {
 		case <-ctx.Done():
 			return
 		case <-l.Wait():
+			wg.Add(1)
 			go l.run(wg, f, i, onPanic)
 		}
 	}
@@ -71,8 +71,7 @@ func (c *ConcurrentPool) RunMaxContext(ctx context.Context, f func(any), v []any
 }
 
 func (c *ConcurrentPool) RunContext(ctx context.Context, max int, f func(any), v []any, onPanic func(any, any)) {
-	wg := &sync.WaitGroup{}
-	wg.Add(len(v))
+	wg := new(sync.WaitGroup)
 	idle := make(chan struct{}, max)
 	defer close(idle)
 	for i := 0; i < max; i++ {
@@ -84,6 +83,7 @@ func (c *ConcurrentPool) RunContext(ctx context.Context, max int, f func(any), v
 		case <-ctx.Done():
 			return
 		case <-c.Wait():
+			wg.Add(1)
 			go c.run(idle, wg, f, i, onPanic)
 		}
 	}

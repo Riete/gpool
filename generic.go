@@ -26,13 +26,13 @@ func (g *GenericRateLimiterPool[T]) Run(v []T, onPanic func(T, any)) {
 }
 
 func (g *GenericRateLimiterPool[T]) RunContext(ctx context.Context, v []T, onPanic func(T, any)) {
-	wg := &sync.WaitGroup{}
-	wg.Add(len(v))
+	wg := new(sync.WaitGroup)
 	for _, i := range v {
 		select {
 		case <-ctx.Done():
 			return
 		case <-g.Wait():
+			wg.Add(1)
 			go g.run(wg, i, onPanic)
 		}
 	}
@@ -74,8 +74,7 @@ func (g *GenericConcurrentPool[T]) RunMaxContext(ctx context.Context, v []T, onP
 }
 
 func (g *GenericConcurrentPool[T]) RunContext(ctx context.Context, max int, v []T, onPanic func(T, any)) {
-	wg := &sync.WaitGroup{}
-	wg.Add(len(v))
+	wg := new(sync.WaitGroup)
 	idle := make(chan struct{}, max)
 	defer close(idle)
 	for i := 0; i < max; i++ {
@@ -87,6 +86,7 @@ func (g *GenericConcurrentPool[T]) RunContext(ctx context.Context, max int, v []
 		case <-ctx.Done():
 			return
 		case <-g.Wait():
+			wg.Add(1)
 			go g.run(idle, wg, i, onPanic)
 		}
 	}
