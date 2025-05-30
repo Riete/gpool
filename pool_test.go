@@ -1,6 +1,7 @@
 package gpool
 
 import (
+	"context"
 	"log"
 	"testing"
 	"time"
@@ -19,16 +20,21 @@ func TestNewPool(t *testing.T) {
 	}
 	var items3 []int
 	for i := 201; i < 301; i++ {
-		items2 = append(items2, i)
+		items3 = append(items3, i)
 	}
 	f := func(i int) {
 		log.Println(i)
 		time.Sleep(2 * time.Second)
 	}
-	r := p.Submit(
-		NewTask[int](f, items, 10, nil),
-		NewTask[int](f, items2, 20, nil),
-		NewTask[int](f, items3, 10, nil),
+	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+	r, err := p.Submit(
+		NewTask(f, items, 1, nil),
+		NewTask(f, items2, 1, nil),
+		NewTaskContext(ctx, f, items3, 1, nil),
 	)
-	r.Wait()
+	if err != nil {
+		t.Error(err)
+	} else {
+		r.Wait()
+	}
 }

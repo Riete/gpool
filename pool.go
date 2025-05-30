@@ -2,6 +2,7 @@ package gpool
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
@@ -34,6 +35,8 @@ type Pool[T any] struct {
 	task    chan *Task[T]
 	stop    chan struct{}
 	once    sync.Once
+	stopped bool
+	mu      sync.Mutex
 }
 
 func (p *Pool[T]) Capacity() int {
@@ -55,8 +58,12 @@ func (p *Pool[T]) start() {
 	}
 }
 
+// Stop does not affect the submitted tasks, but no new tasks can be submitted
 func (p *Pool[T]) Stop() {
 	p.once.Do(func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.stopped = true
 		close(p.stop)
 	})
 }
@@ -121,14 +128,19 @@ func (p *Pool[T]) unlimitedRun(task *Task[T]) {
 	wg.Wait()
 }
 
-func (p *Pool[T]) Submit(tasks ...*Task[T]) *sync.WaitGroup {
+func (p *Pool[T]) Submit(tasks ...*Task[T]) (*sync.WaitGroup, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stopped {
+		return nil, errors.New("pool has been stopped")
+	}
 	wg := new(sync.WaitGroup)
 	wg.Add(len(tasks))
 	for _, task := range tasks {
 		task.wg = wg
 		p.task <- task
 	}
-	return wg
+	return wg, nil
 }
 
 func NewPool[T any](capacity int) *Pool[T] {
