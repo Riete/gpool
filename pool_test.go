@@ -1,14 +1,13 @@
 package gpool
 
 import (
-	"context"
 	"log"
 	"testing"
 	"time"
 )
 
 func TestNewPool(t *testing.T) {
-	p := NewPool[int](40)
+	p := NewPool[int](60)
 
 	var items []int
 	for i := 1; i < 101; i++ {
@@ -24,13 +23,24 @@ func TestNewPool(t *testing.T) {
 	}
 	f := func(i int) {
 		log.Println(i)
-		time.Sleep(2 * time.Second)
+		time.Sleep(time.Second)
 	}
-	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
 	r, err := p.Submit(
-		NewTask(f, items, 1, nil),
-		NewTask(f, items2, 1, nil),
-		NewTaskContext(ctx, f, items3, 1, nil),
+		NewTask(f, items, 20, nil),
+		NewTask(f, items2, 20, nil),
+		NewTask(f, items3, 20, nil),
+	)
+	if err != nil {
+		t.Error(err)
+	} else {
+		r.Wait()
+	}
+	t.Log("===========================================================")
+	time.Sleep(2 * time.Second)
+	r, err = p.Submit(
+		NewTask(f, items, 2, nil),
+		NewTask(f, items2, 2, nil),
+		NewTask(f, items3, 2, nil),
 	)
 	if err != nil {
 		t.Error(err)

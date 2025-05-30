@@ -31,12 +31,13 @@ func NewTaskContext[T any](ctx context.Context, f func(T), params []T, limit int
 }
 
 type Pool[T any] struct {
-	limiter *limiter
-	task    chan *Task[T]
-	stop    chan struct{}
-	once    sync.Once
-	stopped bool
-	mu      sync.Mutex
+	limiter  *limiter
+	task     chan *Task[T]
+	stop     chan struct{}
+	once     sync.Once
+	stopped  bool
+	mu       sync.Mutex
+	idlePool map[int]*sync.Pool
 }
 
 func (p *Pool[T]) Capacity() int {
@@ -94,9 +95,25 @@ func (p *Pool[T]) limitedRun(task *Task[T]) {
 	defer task.done()
 	wg := new(sync.WaitGroup)
 	limit := min(task.limit, p.Capacity())
-	idle := make(chan struct{}, limit)
-	defer close(idle)
-	defer wg.Wait()
+
+	p.mu.Lock()
+	idlePool, exist := p.idlePool[limit]
+	if !exist {
+		idlePool = &sync.Pool{New: func() any {
+			return make(chan struct{}, limit)
+		}}
+		p.idlePool[limit] = idlePool
+	}
+	p.mu.Unlock()
+
+	idle := idlePool.Get().(chan struct{})
+	defer func() {
+		wg.Wait()
+		for len(idle) > 0 {
+			<-idle
+		}
+		idlePool.Put(idle)
+	}()
 
 	for i := 0; i < limit; i++ {
 		idle <- struct{}{}
@@ -147,9 +164,10 @@ func (p *Pool[T]) Submit(tasks ...*Task[T]) (*sync.WaitGroup, error) {
 
 func NewPool[T any](capacity int) *Pool[T] {
 	p := &Pool[T]{
-		limiter: newLimiter(capacity),
-		task:    make(chan *Task[T]),
-		stop:    make(chan struct{}),
+		limiter:  newLimiter(capacity),
+		task:     make(chan *Task[T]),
+		stop:     make(chan struct{}),
+		idlePool: make(map[int]*sync.Pool),
 	}
 	go p.start()
 	return p
