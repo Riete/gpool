@@ -96,6 +96,8 @@ func (p *Pool[T]) limitedRun(task *Task[T]) {
 	limit := min(task.limit, p.Capacity())
 	idle := make(chan struct{}, limit)
 	defer close(idle)
+	defer wg.Wait()
+
 	for i := 0; i < limit; i++ {
 		idle <- struct{}{}
 	}
@@ -109,13 +111,14 @@ func (p *Pool[T]) limitedRun(task *Task[T]) {
 			go p.run(wg, idle, task, param)
 		}
 	}
-	wg.Wait()
 }
 
 // unlimitedRun qps mode, the maximum qps is Capacity
 func (p *Pool[T]) unlimitedRun(task *Task[T]) {
 	defer task.done()
 	wg := new(sync.WaitGroup)
+	defer wg.Wait()
+
 	for _, param := range task.params {
 		select {
 		case <-task.ctx.Done():
@@ -125,7 +128,6 @@ func (p *Pool[T]) unlimitedRun(task *Task[T]) {
 			go p.run(wg, nil, task, param)
 		}
 	}
-	wg.Wait()
 }
 
 func (p *Pool[T]) Submit(tasks ...*Task[T]) (*sync.WaitGroup, error) {
