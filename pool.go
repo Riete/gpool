@@ -6,6 +6,8 @@ import (
 	"sync"
 )
 
+var PoolStoppedError = errors.New("pool has been stopped")
+
 // Task
 // limit is the maximum concurrency it should not exceed the Pool.Capacity
 // runtime value will be set to min(limit, Pool.Capacity), zero means no limit
@@ -34,7 +36,6 @@ type Pool[T any] struct {
 	limiter  *limiter
 	task     chan *Task[T]
 	stop     chan struct{}
-	once     sync.Once
 	stopped  bool
 	mu       sync.Mutex
 	idlePool map[int]*sync.Pool
@@ -61,12 +62,12 @@ func (p *Pool[T]) start() {
 
 // Stop does not affect the submitted tasks, but no new tasks can be submitted
 func (p *Pool[T]) Stop() {
-	p.once.Do(func() {
-		p.mu.Lock()
-		defer p.mu.Unlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.stopped {
 		p.stopped = true
 		close(p.stop)
-	})
+	}
 }
 
 func (p *Pool[T]) dispatch(task *Task[T]) {
@@ -77,12 +78,8 @@ func (p *Pool[T]) dispatch(task *Task[T]) {
 	}
 }
 
-func (p *Pool[T]) run(wg *sync.WaitGroup, idle chan struct{}, task *Task[T], param T) {
+func (p *Pool[T]) run(task *Task[T], param T) {
 	defer func() {
-		wg.Done()
-		if task.limit > 0 {
-			idle <- struct{}{}
-		}
 		if err := recover(); err != nil && task.onPanic != nil {
 			task.onPanic(param, err)
 		}
@@ -92,10 +89,8 @@ func (p *Pool[T]) run(wg *sync.WaitGroup, idle chan struct{}, task *Task[T], par
 
 // limitedRun concurrency mode, the maximum concurrency is min(Task.limit, Capacity)
 func (p *Pool[T]) limitedRun(task *Task[T]) {
-	defer task.done()
 	wg := new(sync.WaitGroup)
 	limit := min(task.limit, p.Capacity())
-
 	p.mu.Lock()
 	idlePool, exist := p.idlePool[limit]
 	if !exist {
@@ -109,13 +104,14 @@ func (p *Pool[T]) limitedRun(task *Task[T]) {
 	idle := idlePool.Get().(chan struct{})
 	defer func() {
 		wg.Wait()
+		task.done()
 		for len(idle) > 0 {
 			<-idle
 		}
 		idlePool.Put(idle)
 	}()
 
-	for i := 0; i < limit; i++ {
+	for range limit {
 		idle <- struct{}{}
 	}
 	for _, param := range task.params {
@@ -124,25 +120,29 @@ func (p *Pool[T]) limitedRun(task *Task[T]) {
 		case <-task.ctx.Done():
 			return
 		case <-p.limiter.wait():
-			wg.Add(1)
-			go p.run(wg, idle, task, param)
+			wg.Go(func() {
+				p.run(task, param)
+				idle <- struct{}{}
+			})
 		}
 	}
 }
 
 // unlimitedRun qps mode, the maximum qps is Capacity
 func (p *Pool[T]) unlimitedRun(task *Task[T]) {
-	defer task.done()
 	wg := new(sync.WaitGroup)
-	defer wg.Wait()
-
+	defer func() {
+		wg.Wait()
+		task.done()
+	}()
 	for _, param := range task.params {
 		select {
 		case <-task.ctx.Done():
 			return
 		case <-p.limiter.wait():
-			wg.Add(1)
-			go p.run(wg, nil, task, param)
+			wg.Go(func() {
+				p.run(task, param)
+			})
 		}
 	}
 }
@@ -151,7 +151,7 @@ func (p *Pool[T]) Submit(tasks ...*Task[T]) (*sync.WaitGroup, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stopped {
-		return nil, errors.New("pool has been stopped")
+		return nil, PoolStoppedError
 	}
 	wg := new(sync.WaitGroup)
 	wg.Add(len(tasks))
@@ -165,7 +165,7 @@ func (p *Pool[T]) Submit(tasks ...*Task[T]) (*sync.WaitGroup, error) {
 func NewPool[T any](capacity int) *Pool[T] {
 	p := &Pool[T]{
 		limiter:  newLimiter(capacity),
-		task:     make(chan *Task[T]),
+		task:     make(chan *Task[T], 64),
 		stop:     make(chan struct{}),
 		idlePool: make(map[int]*sync.Pool),
 	}
