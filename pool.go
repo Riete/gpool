@@ -1,84 +1,80 @@
 package gpool
 
 import (
-	"context"
 	"errors"
 	"sync"
 )
 
+var poolProvider = &pool{idlePool: make(map[int]*sync.Pool)}
 var PoolStoppedError = errors.New("pool has been stopped")
 
-// Task
-// limit is the maximum concurrency it should not exceed the Pool.Capacity
-// runtime value will be set to min(limit, Pool.Capacity), zero means no limit
-type Task[T any] struct {
-	ctx     context.Context
-	f       func(T)
-	params  []T
-	limit   int
-	onPanic func(T, any)
-	wg      *sync.WaitGroup
-}
-
-func (t *Task[T]) done() {
-	t.wg.Done()
-}
-
-func NewTask[T any](f func(T), params []T, limit int, onPanic func(T, any)) *Task[T] {
-	return NewTaskContext[T](context.Background(), f, params, limit, onPanic)
-}
-
-func NewTaskContext[T any](ctx context.Context, f func(T), params []T, limit int, onPanic func(T, any)) *Task[T] {
-	return &Task[T]{ctx: ctx, f: f, params: params, limit: limit, onPanic: onPanic}
-}
-
-type Pool[T any] struct {
-	limiter  *limiter
-	task     chan *Task[T]
-	stop     chan struct{}
-	stopped  bool
-	mu       sync.Mutex
+type pool struct {
+	mu       sync.RWMutex
 	idlePool map[int]*sync.Pool
 }
 
-func (p *Pool[T]) Capacity() int {
-	return p.limiter.capacity()
+func (p *pool) get(limit int) *sync.Pool {
+	p.mu.RLock()
+	idlePool, exists := p.idlePool[limit]
+	p.mu.RUnlock()
+	if exists {
+		return idlePool
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	idlePool = &sync.Pool{New: func() any {
+		return make(chan struct{}, limit)
+	}}
+	p.idlePool[limit] = idlePool
+	return idlePool
 }
 
-func (p *Pool[T]) SetCapacity(max int) {
-	p.limiter.setCapacity(max)
+type TaskPool[T any] struct {
+	limiter *limiter
+	task    chan *Task[T]
+	stop    chan struct{}
+	stopped bool
+	mu      sync.Mutex
 }
 
-func (p *Pool[T]) start() {
+func (t *TaskPool[T]) Capacity() int {
+	return t.limiter.capacity()
+}
+
+func (t *TaskPool[T]) SetCapacity(max int) {
+	t.limiter.setCapacity(max)
+}
+
+func (t *TaskPool[T]) start() {
 	for {
 		select {
-		case <-p.stop:
+		case <-t.stop:
 			return
-		case task := <-p.task:
-			go p.dispatch(task)
+		case task := <-t.task:
+			go t.dispatch(task)
 		}
 	}
 }
 
 // Stop does not affect the submitted tasks, but no new tasks can be submitted
-func (p *Pool[T]) Stop() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.stopped {
-		p.stopped = true
-		close(p.stop)
+func (t *TaskPool[T]) Stop() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.stopped {
+		t.stopped = true
+		close(t.stop)
 	}
 }
 
-func (p *Pool[T]) dispatch(task *Task[T]) {
+func (t *TaskPool[T]) dispatch(task *Task[T]) {
 	if task.limit > 0 {
-		p.limitedRun(task)
+		t.limitedRun(task)
 	} else {
-		p.unlimitedRun(task)
+		t.unlimitedRun(task)
 	}
 }
 
-func (p *Pool[T]) run(task *Task[T], param T) {
+func (t *TaskPool[T]) run(task *Task[T], param T) {
 	defer func() {
 		if err := recover(); err != nil && task.onPanic != nil {
 			task.onPanic(param, err)
@@ -88,19 +84,10 @@ func (p *Pool[T]) run(task *Task[T], param T) {
 }
 
 // limitedRun concurrency mode, the maximum concurrency is min(Task.limit, Capacity)
-func (p *Pool[T]) limitedRun(task *Task[T]) {
+func (t *TaskPool[T]) limitedRun(task *Task[T]) {
 	wg := new(sync.WaitGroup)
-	limit := min(task.limit, p.Capacity())
-	p.mu.Lock()
-	idlePool, exist := p.idlePool[limit]
-	if !exist {
-		idlePool = &sync.Pool{New: func() any {
-			return make(chan struct{}, limit)
-		}}
-		p.idlePool[limit] = idlePool
-	}
-	p.mu.Unlock()
-
+	limit := min(task.limit, t.Capacity())
+	idlePool := poolProvider.get(limit)
 	idle := idlePool.Get().(chan struct{})
 	defer func() {
 		wg.Wait()
@@ -119,9 +106,9 @@ func (p *Pool[T]) limitedRun(task *Task[T]) {
 		select {
 		case <-task.ctx.Done():
 			return
-		case <-p.limiter.wait():
+		case <-t.limiter.wait():
 			wg.Go(func() {
-				p.run(task, param)
+				t.run(task, param)
 				idle <- struct{}{}
 			})
 		}
@@ -129,7 +116,7 @@ func (p *Pool[T]) limitedRun(task *Task[T]) {
 }
 
 // unlimitedRun qps mode, the maximum qps is Capacity
-func (p *Pool[T]) unlimitedRun(task *Task[T]) {
+func (t *TaskPool[T]) unlimitedRun(task *Task[T]) {
 	wg := new(sync.WaitGroup)
 	defer func() {
 		wg.Wait()
@@ -139,35 +126,34 @@ func (p *Pool[T]) unlimitedRun(task *Task[T]) {
 		select {
 		case <-task.ctx.Done():
 			return
-		case <-p.limiter.wait():
+		case <-t.limiter.wait():
 			wg.Go(func() {
-				p.run(task, param)
+				t.run(task, param)
 			})
 		}
 	}
 }
 
-func (p *Pool[T]) Submit(tasks ...*Task[T]) (*sync.WaitGroup, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.stopped {
+func (t *TaskPool[T]) Submit(tasks ...*Task[T]) (*sync.WaitGroup, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stopped {
 		return nil, PoolStoppedError
 	}
 	wg := new(sync.WaitGroup)
 	wg.Add(len(tasks))
 	for _, task := range tasks {
 		task.wg = wg
-		p.task <- task
+		t.task <- task
 	}
 	return wg, nil
 }
 
-func NewPool[T any](capacity int) *Pool[T] {
-	p := &Pool[T]{
-		limiter:  newLimiter(capacity),
-		task:     make(chan *Task[T], 64),
-		stop:     make(chan struct{}),
-		idlePool: make(map[int]*sync.Pool),
+func NewTaskPool[T any](capacity int) *TaskPool[T] {
+	p := &TaskPool[T]{
+		limiter: newLimiter(capacity),
+		task:    make(chan *Task[T], 64),
+		stop:    make(chan struct{}),
 	}
 	go p.start()
 	return p

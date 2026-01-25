@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-func TestNewPool(t *testing.T) {
-	p := NewPool[int](60)
+func TestNewTaskPool(t *testing.T) {
+	p := NewTaskPool[int](60)
 
 	var items []int
 	for i := 1; i < 101; i++ {
