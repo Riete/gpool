@@ -83,15 +83,15 @@ func (t *TaskPool[T]) dispatch(task *Task[T]) {
 	}
 }
 
-func (t *TaskPool[T]) run(task *Task[T], param T) {
+func (t *TaskPool[T]) run(f func(T), param T, onPanic func(T, any)) {
 	defer func() {
-		if err := recover(); err != nil && task.onPanic != nil {
-			task.onPanic(param, err)
+		if err := recover(); err != nil && onPanic != nil {
+			onPanic(param, err)
 		}
 	}()
 	t.pending.Add(-1)
 	t.running.Add(1)
-	task.f(param)
+	f(param)
 	t.running.Add(-1)
 	t.completed.Add(1)
 }
@@ -114,14 +114,20 @@ func (t *TaskPool[T]) limitedRun(task *Task[T]) {
 	for range limit {
 		idle <- struct{}{}
 	}
-	for _, param := range task.params {
+
+	f := task.taskFunc.Func
+	onPanic := task.taskFunc.OnPanic
+	if onPanic == nil {
+		onPanic = task.onPanic
+	}
+	for _, param := range task.taskFunc.Params {
 		<-idle
 		select {
 		case <-task.ctx.Done():
 			return
 		case <-t.limiter.wait():
 			wg.Go(func() {
-				t.run(task, param)
+				t.run(f, param, onPanic)
 				idle <- struct{}{}
 			})
 		}
@@ -151,19 +157,25 @@ func (t *TaskPool[T]) unlimitedRun(task *Task[T]) {
 		wg.Wait()
 		task.done()
 	}()
-	for _, param := range task.params {
+
+	f := task.taskFunc.Func
+	onPanic := task.taskFunc.OnPanic
+	if onPanic == nil {
+		onPanic = task.onPanic
+	}
+	for _, param := range task.taskFunc.Params {
 		select {
 		case <-task.ctx.Done():
 			return
 		case <-t.limiter.wait():
 			wg.Go(func() {
-				t.run(task, param)
+				t.run(f, param, onPanic)
 			})
 		}
 	}
 }
 
-func (t *TaskPool[T]) Submit(tasks ...*Task[T]) (*sync.WaitGroup, error) {
+func (t *TaskPool[T]) SubmitTasks(tasks ...*Task[T]) (*sync.WaitGroup, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.stopped {
@@ -173,7 +185,7 @@ func (t *TaskPool[T]) Submit(tasks ...*Task[T]) (*sync.WaitGroup, error) {
 	wg.Add(len(tasks))
 	for _, task := range tasks {
 		task.wg = wg
-		t.pending.Add(int64(len(task.params)))
+		t.pending.Add(int64(len(task.taskFunc.Params)))
 		t.task <- task
 	}
 	return wg, nil
@@ -190,4 +202,20 @@ func NewTaskPool[T any](capacity int) *TaskPool[T] {
 	}
 	go p.start()
 	return p
+}
+
+type TaskBuilderPool[T any] struct {
+	*TaskPool[T]
+	builder *TaskBuilder[T]
+}
+
+func (t *TaskBuilderPool[T]) SubmitTaskFuncs(taskFuncs ...*TaskFunc[T]) (*sync.WaitGroup, error) {
+	return t.SubmitTasks(t.builder.BuildTasks(taskFuncs...)...)
+}
+
+func NewTaskBuilderPool[T any](capacity int, builder *TaskBuilder[T]) *TaskBuilderPool[T] {
+	return &TaskBuilderPool[T]{
+		NewTaskPool[T](capacity),
+		builder,
+	}
 }

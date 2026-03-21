@@ -5,27 +5,33 @@ import (
 	"sync"
 )
 
+type TaskFunc[T any] struct {
+	Func    func(T)
+	Params  []T
+	OnPanic func(T, any)
+}
+
 // Task limit is the maximum concurrency it should not exceed the TaskPool.Capacity
 // runtime value will be set to min(limit, TaskPool.Capacity), zero means no limit
+// TaskFunc.OnPanic is preferred to Task.onPanic
 type Task[T any] struct {
-	ctx     context.Context
-	f       func(T)
-	params  []T
-	limit   int
-	onPanic func(T, any)
-	wg      *sync.WaitGroup
+	ctx      context.Context
+	taskFunc *TaskFunc[T]
+	limit    int
+	onPanic  func(T, any)
+	wg       *sync.WaitGroup
 }
 
 func (t *Task[T]) done() {
 	t.wg.Done()
 }
 
-func NewTask[T any](f func(T), params []T, limit int, onPanic func(T, any)) *Task[T] {
-	return NewTaskContext[T](context.Background(), f, params, limit, onPanic)
+func NewTask[T any](taskFunc *TaskFunc[T], limit int, onPanic func(T, any)) *Task[T] {
+	return NewTaskContext[T](context.Background(), taskFunc, limit, onPanic)
 }
 
-func NewTaskContext[T any](ctx context.Context, f func(T), params []T, limit int, onPanic func(T, any)) *Task[T] {
-	return &Task[T]{ctx: ctx, f: f, params: params, limit: limit, onPanic: onPanic}
+func NewTaskContext[T any](ctx context.Context, taskFunc *TaskFunc[T], limit int, onPanic func(T, any)) *Task[T] {
+	return &Task[T]{ctx: ctx, taskFunc: taskFunc, limit: limit, onPanic: onPanic}
 }
 
 type TaskBuilder[T any] struct {
@@ -49,18 +55,22 @@ func (t *TaskBuilder[T]) WithOnPanic(onPanic func(T, any)) *TaskBuilder[T] {
 	return t
 }
 
-func (t *TaskBuilder[T]) Build(f func(T), params []T) *Task[T] {
-	return NewTaskContext[T](t.ctx, f, params, t.limit, t.onPanic)
-}
-
-func NewTaskBuilder[T any](limit int, onPanic func(T, any)) *TaskBuilder[T] {
-	return NewTaskBuilderContext[T](context.Background(), limit, onPanic)
-}
-
-func NewTaskBuilderContext[T any](ctx context.Context, limit int, onPanic func(T, any)) *TaskBuilder[T] {
-	return &TaskBuilder[T]{
-		ctx:     ctx,
-		limit:   limit,
-		onPanic: onPanic,
+func (t *TaskBuilder[T]) BuildTasks(taskFuncs ...*TaskFunc[T]) []*Task[T] {
+	var tasks []*Task[T]
+	for _, taskFunc := range taskFuncs {
+		tasks = append(tasks, t.BuildTask(taskFunc))
 	}
+	return tasks
+}
+
+func (t *TaskBuilder[T]) BuildTask(taskFunc *TaskFunc[T]) *Task[T] {
+	return NewTaskContext[T](t.ctx, taskFunc, t.limit, t.onPanic)
+}
+
+func NewTaskBuilder[T any]() *TaskBuilder[T] {
+	return NewTaskBuilderContext[T](context.Background())
+}
+
+func NewTaskBuilderContext[T any](ctx context.Context) *TaskBuilder[T] {
+	return &TaskBuilder[T]{ctx: ctx}
 }
