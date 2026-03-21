@@ -31,10 +31,11 @@ func TestNewTaskPool(t *testing.T) {
 		log.Println(i)
 		time.Sleep(time.Second)
 	}
+	tb := NewTaskBuilder[int](20, nil)
 	r, err := p.Submit(
-		NewTask(f, items, 20, nil),
-		NewTask(f, items2, 20, nil),
-		NewTask(f, items3, 20, nil),
+		tb.Build(f, items),
+		tb.Build(f, items2),
+		tb.Build(f, items3),
 	)
 	if err != nil {
 		t.Error(err)
