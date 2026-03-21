@@ -3,6 +3,7 @@ package gpool
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 var poolProvider = &pool{idlePool: make(map[int]*sync.Pool)}
@@ -22,6 +23,10 @@ func (p *pool) get(limit int) *sync.Pool {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	idlePool, exists = p.idlePool[limit]
+	if exists {
+		return idlePool
+	}
 	idlePool = &sync.Pool{New: func() any {
 		return make(chan struct{}, limit)
 	}}
@@ -30,11 +35,15 @@ func (p *pool) get(limit int) *sync.Pool {
 }
 
 type TaskPool[T any] struct {
-	limiter *limiter
-	task    chan *Task[T]
-	stop    chan struct{}
-	stopped bool
-	mu      sync.Mutex
+	limiter   *limiter
+	task      chan *Task[T]
+	stop      chan struct{}
+	stopped   bool
+	running   *atomic.Int64
+	pending   *atomic.Int64
+	completed *atomic.Int64
+	total     *atomic.Int64
+	mu        sync.Mutex
 }
 
 func (t *TaskPool[T]) Capacity() int {
@@ -80,7 +89,11 @@ func (t *TaskPool[T]) run(task *Task[T], param T) {
 			task.onPanic(param, err)
 		}
 	}()
+	t.pending.Add(-1)
+	t.running.Add(1)
 	task.f(param)
+	t.running.Add(-1)
+	t.completed.Add(1)
 }
 
 // limitedRun concurrency mode, the maximum concurrency is min(Task.limit, Capacity)
@@ -115,6 +128,22 @@ func (t *TaskPool[T]) limitedRun(task *Task[T]) {
 	}
 }
 
+func (t *TaskPool[T]) PendingCount() int64 {
+	return t.pending.Load()
+}
+
+func (t *TaskPool[T]) RunningCount() int64 {
+	return t.running.Load()
+}
+
+func (t *TaskPool[T]) CompletedCount() int64 {
+	return t.completed.Load()
+}
+
+func (t *TaskPool[T]) ResetCompletedCount() {
+	t.completed.Store(0)
+}
+
 // unlimitedRun qps mode, the maximum qps is Capacity
 func (t *TaskPool[T]) unlimitedRun(task *Task[T]) {
 	wg := new(sync.WaitGroup)
@@ -144,6 +173,7 @@ func (t *TaskPool[T]) Submit(tasks ...*Task[T]) (*sync.WaitGroup, error) {
 	wg.Add(len(tasks))
 	for _, task := range tasks {
 		task.wg = wg
+		t.pending.Add(int64(len(task.params)))
 		t.task <- task
 	}
 	return wg, nil
@@ -151,9 +181,12 @@ func (t *TaskPool[T]) Submit(tasks ...*Task[T]) (*sync.WaitGroup, error) {
 
 func NewTaskPool[T any](capacity int) *TaskPool[T] {
 	p := &TaskPool[T]{
-		limiter: newLimiter(capacity),
-		task:    make(chan *Task[T], 64),
-		stop:    make(chan struct{}),
+		limiter:   newLimiter(capacity),
+		task:      make(chan *Task[T], 64),
+		stop:      make(chan struct{}),
+		running:   new(atomic.Int64),
+		pending:   new(atomic.Int64),
+		completed: new(atomic.Int64),
 	}
 	go p.start()
 	return p

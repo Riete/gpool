@@ -1,6 +1,7 @@
 package gpool
 
 import (
+	"fmt"
 	"log"
 	"testing"
 	"time"
@@ -8,7 +9,12 @@ import (
 
 func TestNewTaskPool(t *testing.T) {
 	p := NewTaskPool[int](60)
-
+	go func() {
+		for {
+			time.Sleep(time.Second)
+			fmt.Println("running task:", p.RunningCount(), "pending task:", p.PendingCount(), "completed task:", p.CompletedCount())
+		}
+	}()
 	var items []int
 	for i := 1; i < 101; i++ {
 		items = append(items, i)
