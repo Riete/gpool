@@ -90,9 +90,8 @@ type TaskPool[T any] struct {
 	task    chan *Task[T]
 	stop    chan struct{}
 	worker  chan struct{}
-	stopped bool
 	counter *Counter
-	mu      sync.Mutex
+	stopped *atomic.Bool
 }
 
 func (t *TaskPool[T]) start() {
@@ -108,10 +107,7 @@ func (t *TaskPool[T]) start() {
 
 // Stop does not affect the submitted tasks, but no new tasks can be submitted
 func (t *TaskPool[T]) Stop() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if !t.stopped {
-		t.stopped = true
+	if t.stopped.CompareAndSwap(false, true) {
 		close(t.stop)
 	}
 }
@@ -231,9 +227,7 @@ func (t *TaskPool[T]) unlimitedRun(task *Task[T]) {
 }
 
 func (t *TaskPool[T]) Submit(tasks ...*Task[T]) *Future {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.stopped {
+	if t.stopped.Load() {
 		return emptyFuture
 	}
 	wg := new(sync.WaitGroup)
@@ -267,6 +261,7 @@ func NewTaskPool[T any](capacity int, mode Mode) *TaskPool[T] {
 			pending:   new(atomic.Int64),
 			completed: new(atomic.Int64),
 		},
+		stopped: new(atomic.Bool),
 	}
 	if mode == ConcurrentMode {
 		p.worker = make(chan struct{}, capacity)
