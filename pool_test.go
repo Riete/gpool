@@ -2,17 +2,17 @@ package gpool
 
 import (
 	"fmt"
-	"log"
 	"testing"
 	"time"
 )
 
-func TestNewTaskPool(t *testing.T) {
-	p := NewTaskPool[int](60)
+func TestNewConcurrentTaskPool(t *testing.T) {
+	p := NewConcurrentTaskPool[int](60)
+	counter := p.Counter()
 	go func() {
 		for {
 			time.Sleep(time.Second)
-			fmt.Println("running task:", p.RunningCount(), "pending task:", p.PendingCount(), "completed task:", p.CompletedCount())
+			fmt.Println("running task:", counter.Running(), "pending task:", counter.Pending(), "completed task:", counter.Completed())
 		}
 	}()
 	var items []int
@@ -28,40 +28,23 @@ func TestNewTaskPool(t *testing.T) {
 		items3 = append(items3, i)
 	}
 	f := func(i int) {
-		log.Println(i)
-		time.Sleep(time.Second)
+		// log.Println(i)
+		time.Sleep(5 * time.Second)
 	}
-	r, err := p.SubmitTasks(
-		NewTask(&TaskFunc[int]{f, items, nil}, 20, nil),
-		NewTask(&TaskFunc[int]{f, items2, nil}, 20, nil),
-		NewTask(&TaskFunc[int]{f, items3, nil}, 20, nil),
-	)
-	if err != nil {
-		t.Error(err)
-	} else {
-		r.Wait()
-	}
-	t.Log("===========================================================")
-	time.Sleep(2 * time.Second)
-	r, err = p.SubmitTasks(
-		NewTask(&TaskFunc[int]{f, items, nil}, 7, nil),
-		NewTask(&TaskFunc[int]{f, items2, nil}, 7, nil),
-		NewTask(&TaskFunc[int]{f, items3, nil}, 7, nil),
-	)
-	if err != nil {
-		t.Error(err)
-	} else {
-		r.Wait()
-	}
-	fmt.Println("running task:", p.RunningCount(), "pending task:", p.PendingCount(), "completed task:", p.CompletedCount())
+	taskBuilder := NewTaskBuilder[int]().WitTaskFunc(f).WithConcurrency(1)
+	future1 := p.Submit(taskBuilder.Build(items, items2, items3)...)
+	future2 := p.Submit(taskBuilder.WithConcurrency(1).Build(items, items2, items3)...)
+	p.Wait(future1, future2)
+	fmt.Println("running task:", counter.Running(), "pending task:", counter.Pending(), "completed task:", counter.Completed())
 }
 
-func TestNewTaskBuilderPool(t *testing.T) {
-	p := NewTaskBuilderPool[int](60, NewTaskBuilder[int]().WithLimit(40))
+func TestNewRateLimiterTaskPool(t *testing.T) {
+	p := NewRateLimiterTaskPool[int](60)
+	counter := p.Counter()
 	go func() {
 		for {
 			time.Sleep(time.Second)
-			fmt.Println("running task:", p.RunningCount(), "pending task:", p.PendingCount(), "completed task:", p.CompletedCount())
+			fmt.Println("running task:", counter.Running(), "pending task:", counter.Pending(), "completed task:", counter.Completed())
 		}
 	}()
 	var items []int
@@ -77,19 +60,12 @@ func TestNewTaskBuilderPool(t *testing.T) {
 		items3 = append(items3, i)
 	}
 	f := func(i int) {
-		log.Println(i)
-		time.Sleep(time.Second)
+		// log.Println(i)
+		time.Sleep(5 * time.Second)
 	}
-	r, err := p.SubmitTaskFuncs(
-		&TaskFunc[int]{f, items, nil},
-		&TaskFunc[int]{f, items2, nil},
-		&TaskFunc[int]{f, items3, nil},
-	)
-	if err != nil {
-		t.Error(err)
-	} else {
-		r.Wait()
-	}
-	fmt.Println("running task:", p.RunningCount(), "pending task:", p.PendingCount(), "completed task:", p.CompletedCount())
-
+	taskBuilder := NewTaskBuilder[int]().WitTaskFunc(f).WithConcurrency(1)
+	future1 := p.Submit(taskBuilder.Build(items, items2, items3)...)
+	future2 := p.Submit(taskBuilder.WithConcurrency(1).Build(items, items2, items3)...)
+	p.Wait(future1, future2)
+	fmt.Println("running task:", counter.Running(), "pending task:", counter.Pending(), "completed task:", counter.Completed())
 }
