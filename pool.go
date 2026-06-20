@@ -103,6 +103,7 @@ type TaskPool[T any] struct {
 	worker  chan struct{}
 	counter *Counter
 	stopped *atomic.Bool
+	running *atomic.Int64
 }
 
 func (t *TaskPool[T]) start() {
@@ -124,7 +125,7 @@ func (t *TaskPool[T]) Stop() {
 		go func() {
 			var once sync.Once
 			for {
-				if t.counter.Pending() == 0 {
+				if t.RunningCounter() == 0 {
 					once.Do(func() {
 						t.limiter.Stop()
 					})
@@ -137,6 +138,8 @@ func (t *TaskPool[T]) Stop() {
 }
 
 func (t *TaskPool[T]) dispatch(task *Task[T]) {
+	t.running.Add(1)
+	defer t.running.Add(-1)
 	if task.concurrency > 0 {
 		t.limitedRun(task)
 	} else {
@@ -271,6 +274,10 @@ func (t *TaskPool[T]) Submit(tasks ...*Task[T]) *Future {
 	return &Future{wg: wg, cancelFuncs: cancelFuncs}
 }
 
+func (t *TaskPool[T]) RunningCounter() int64 {
+	return t.running.Load()
+}
+
 func (t *TaskPool[T]) Wait(futures ...*Future) {
 	for _, future := range futures {
 		future.Wait()
@@ -289,6 +296,7 @@ func NewTaskPool[T any](capacity int, mode Mode) *TaskPool[T] {
 			completed: new(atomic.Int64),
 		},
 		stopped: new(atomic.Bool),
+		running: new(atomic.Int64),
 	}
 	if mode == ConcurrentMode {
 		p.worker = make(chan struct{}, capacity)
