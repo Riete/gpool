@@ -1,34 +1,60 @@
 package gpool
 
 import (
-	"context"
+	"time"
 
 	"golang.org/x/time/rate"
 )
 
-type limiter struct {
-	rl *rate.Limiter
-	w  chan struct{}
+type RateLimiter struct {
+	l        *rate.Limiter
+	w        chan struct{}
+	stop     chan struct{}
+	capacity int
 }
 
-func (l *limiter) capacity() int {
-	return l.rl.Burst()
+func (r *RateLimiter) setCapacity(capacity int) {
+	r.l.SetLimit(rate.Limit(capacity))
+	r.l.SetBurst(capacity)
 }
 
-func (l *limiter) setCapacity(max int) {
-	l.rl.SetLimit(rate.Limit(max))
-	l.rl.SetBurst(max)
+func (r *RateLimiter) Capacity() int {
+	return r.capacity
 }
 
-func (l *limiter) wait() chan struct{} {
-	go func() {
-		_ = l.rl.Wait(context.Background())
-		l.w <- struct{}{}
-	}()
-	return l.w
+func (r *RateLimiter) SetCapacity(capacity int) {
+	r.capacity = capacity
+	r.setCapacity(capacity)
 }
 
-// newLimiter max is the maximum token rate
-func newLimiter(max int) *limiter {
-	return &limiter{rl: rate.NewLimiter(rate.Limit(max), max), w: make(chan struct{})}
+func (r *RateLimiter) Start() {
+	r.setCapacity(r.capacity)
+	r.stop = make(chan struct{})
+	for {
+		select {
+		case <-r.stop:
+			return
+		case <-time.After(r.l.Reserve().Delay()):
+			r.w <- struct{}{}
+		}
+	}
+}
+
+func (r *RateLimiter) Stop() {
+	close(r.stop)
+	r.setCapacity(0)
+}
+
+func (r *RateLimiter) Wait() chan struct{} {
+	return r.w
+}
+
+// NewRateLimiter capacity is the maximum token rate
+func NewRateLimiter(capacity int) *RateLimiter {
+	rl := &RateLimiter{
+		l:        rate.NewLimiter(rate.Limit(capacity), capacity),
+		w:        make(chan struct{}, capacity),
+		capacity: capacity,
+	}
+	return rl
 }

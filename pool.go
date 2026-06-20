@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-var poolProvider = &pool{idlePool: make(map[int]*sync.Pool)}
+var poolProvider = &pool{idlePool: make(map[int]*sync.Pool), idleRateLimiter: make(map[int]*sync.Pool)}
 
 type Mode int64
 
@@ -17,28 +17,39 @@ const ConcurrentMode Mode = 0
 const RateLimiterMode Mode = 1
 
 type pool struct {
-	mu       sync.RWMutex
-	idlePool map[int]*sync.Pool
+	mu              sync.RWMutex
+	idlePool        map[int]*sync.Pool
+	idleRateLimiter map[int]*sync.Pool
 }
 
-func (p *pool) get(limit int) *sync.Pool {
+func (p *pool) getPool(pools map[int]*sync.Pool, limit int, f func() any) *sync.Pool {
 	p.mu.RLock()
-	idlePool, exists := p.idlePool[limit]
+	idle, exists := pools[limit]
 	p.mu.RUnlock()
 	if exists {
-		return idlePool
+		return idle
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	idlePool, exists = p.idlePool[limit]
+	idle, exists = pools[limit]
 	if exists {
-		return idlePool
+		return idle
 	}
-	idlePool = &sync.Pool{New: func() any {
+	idle = &sync.Pool{New: f}
+	pools[limit] = idle
+	return idle
+}
+
+func (p *pool) getIdlePool(limit int) *sync.Pool {
+	return p.getPool(p.idlePool, limit, func() any {
 		return make(chan struct{}, limit)
-	}}
-	p.idlePool[limit] = idlePool
-	return idlePool
+	})
+}
+
+func (p *pool) getIdleRateLimiter(limit int) *sync.Pool {
+	return p.getPool(p.idleRateLimiter, limit, func() any {
+		return NewRateLimiter(limit)
+	})
 }
 
 var emptyFuture = new(Future)
@@ -86,7 +97,7 @@ func (c *Counter) Reset() {
 
 type TaskPool[T any] struct {
 	mode    Mode
-	limiter *limiter
+	limiter *RateLimiter
 	task    chan *Task[T]
 	stop    chan struct{}
 	worker  chan struct{}
@@ -95,6 +106,7 @@ type TaskPool[T any] struct {
 }
 
 func (t *TaskPool[T]) start() {
+	go t.limiter.Start()
 	for {
 		select {
 		case <-t.stop:
@@ -109,6 +121,18 @@ func (t *TaskPool[T]) start() {
 func (t *TaskPool[T]) Stop() {
 	if t.stopped.CompareAndSwap(false, true) {
 		close(t.stop)
+		go func() {
+			var once sync.Once
+			for {
+				if t.counter.Pending() == 0 {
+					once.Do(func() {
+						t.limiter.Stop()
+					})
+				} else {
+					time.Sleep(time.Second)
+				}
+			}
+		}()
 	}
 }
 
@@ -151,8 +175,8 @@ func (t *TaskPool[T]) run(f func(T), param T, onPanic func(T, any)) {
 // in RateLimiterMode Task maximum qps is min(Task.concurrency, Capacity)
 func (t *TaskPool[T]) limitedRun(task *Task[T]) {
 	wg := new(sync.WaitGroup)
-	limit := min(task.concurrency, t.limiter.capacity())
-	idlePool := poolProvider.get(limit)
+	limit := min(task.concurrency, t.limiter.Capacity())
+	idlePool := poolProvider.getIdlePool(limit)
 	idle := idlePool.Get().(chan struct{})
 	defer func() {
 		wg.Wait()
@@ -164,14 +188,17 @@ func (t *TaskPool[T]) limitedRun(task *Task[T]) {
 	}()
 
 	if t.mode == RateLimiterMode {
-		ticker := time.NewTicker(time.Millisecond * time.Duration(1000/limit))
+		rateLimiterPool := poolProvider.getIdleRateLimiter(limit)
+		rateLimiter := rateLimiterPool.Get().(*RateLimiter)
+		defer rateLimiterPool.Put(rateLimiter)
+		defer rateLimiter.Stop()
 		stop := make(chan struct{})
-		defer ticker.Stop()
 		defer close(stop)
+		go rateLimiter.Start()
 		go func() {
 			for {
 				select {
-				case <-ticker.C:
+				case <-rateLimiter.Wait():
 					idle <- struct{}{}
 				case <-stop:
 					return
@@ -189,7 +216,7 @@ func (t *TaskPool[T]) limitedRun(task *Task[T]) {
 		select {
 		case <-task.ctx.Done():
 			return
-		case <-t.limiter.wait():
+		case <-t.limiter.Wait():
 			wg.Go(func() {
 				t.run(task.taskFunc, param, task.recover)
 				if t.mode == ConcurrentMode {
@@ -218,7 +245,7 @@ func (t *TaskPool[T]) unlimitedRun(task *Task[T]) {
 		select {
 		case <-task.ctx.Done():
 			return
-		case <-t.limiter.wait():
+		case <-t.limiter.Wait():
 			wg.Go(func() {
 				t.run(task.taskFunc, param, task.recover)
 			})
@@ -253,7 +280,7 @@ func (t *TaskPool[T]) Wait(futures ...*Future) {
 func NewTaskPool[T any](capacity int, mode Mode) *TaskPool[T] {
 	p := &TaskPool[T]{
 		mode:    mode,
-		limiter: newLimiter(capacity),
+		limiter: NewRateLimiter(capacity),
 		task:    make(chan *Task[T], 64),
 		stop:    make(chan struct{}),
 		counter: &Counter{
