@@ -128,9 +128,9 @@ func (t *TaskPool[T]) Stop() {
 					once.Do(func() {
 						t.limiter.Stop()
 					})
-				} else {
-					time.Sleep(time.Second)
+					return
 				}
+				time.Sleep(time.Second)
 			}
 		}()
 	}
