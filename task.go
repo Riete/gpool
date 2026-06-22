@@ -5,16 +5,17 @@ import (
 	"sync"
 )
 
-// Task runtime concurrency: min(concurrency, TaskPool.Capacity) if concurrency > 0, else TaskPool.Capacity
-// On task panic, Task.recover is preferred over default recover(print panic message and goroutine stack trace)
+// Task runtime maxConcurrency will use min(Task.maxConcurrency, Pool.limiter.capacity) if Task.maxConcurrency > 0
+// else Pool.limiter.capacity in both ConcurrentMode and RateLimitMode
+// On task panic, Task.recover is preferred over default recover (print panic message and goroutine stack trace)
 // Use TaskBuilder to build task
 type Task[T any] struct {
-	ctx         context.Context
-	taskFunc    func(T)
-	param       []T
-	concurrency int
-	recover     func(T, any)
-	wg          *sync.WaitGroup
+	ctx            context.Context
+	taskFunc       func(T)
+	param          []T
+	maxConcurrency int
+	recover        func(T, any)
+	wg             *sync.WaitGroup
 }
 
 func (t *Task[T]) done() {
@@ -22,10 +23,10 @@ func (t *Task[T]) done() {
 }
 
 type TaskBuilder[T any] struct {
-	ctx         context.Context
-	taskFunc    func(T)
-	concurrency int
-	recover     func(T, any)
+	ctx            context.Context
+	taskFunc       func(T)
+	maxConcurrency int
+	recover        func(T, any)
 }
 
 func (t *TaskBuilder[T]) WithContext(ctx context.Context) *TaskBuilder[T] {
@@ -33,8 +34,8 @@ func (t *TaskBuilder[T]) WithContext(ctx context.Context) *TaskBuilder[T] {
 	return t
 }
 
-func (t *TaskBuilder[T]) WithConcurrency(concurrency int) *TaskBuilder[T] {
-	t.concurrency = concurrency
+func (t *TaskBuilder[T]) WithMaxConcurrency(maxConcurrency int) *TaskBuilder[T] {
+	t.maxConcurrency = maxConcurrency
 	return t
 }
 
@@ -53,11 +54,11 @@ func (t *TaskBuilder[T]) Build(params ...[]T) []*Task[T] {
 	for _, param := range params {
 		tasks = append(tasks,
 			&Task[T]{
-				ctx:         t.ctx,
-				taskFunc:    t.taskFunc,
-				param:       param,
-				concurrency: t.concurrency,
-				recover:     t.recover,
+				ctx:            t.ctx,
+				taskFunc:       t.taskFunc,
+				param:          param,
+				maxConcurrency: t.maxConcurrency,
+				recover:        t.recover,
 			},
 		)
 	}

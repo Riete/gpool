@@ -9,47 +9,61 @@ import (
 	"time"
 )
 
-var poolProvider = &pool{idlePool: make(map[int]*sync.Pool), idleRateLimiter: make(map[int]*sync.Pool)}
-
 type Mode int64
 
 const ConcurrentMode Mode = 0
-const RateLimiterMode Mode = 1
+const RateLimitMode Mode = 1
 
-type pool struct {
+var syncPoolProvider = &syncPool{
+	chanPool: make(map[int]*sync.Pool),
+	rateLimiterPool: &sync.Pool{
+		New: func() any {
+			return NewRateLimiter(0)
+		}},
+}
+
+type syncPool struct {
 	mu              sync.RWMutex
-	idlePool        map[int]*sync.Pool
-	idleRateLimiter map[int]*sync.Pool
+	chanPool        map[int]*sync.Pool
+	rateLimiterPool *sync.Pool
 }
 
-func (p *pool) getPool(pools map[int]*sync.Pool, limit int, f func() any) *sync.Pool {
-	p.mu.RLock()
-	idle, exists := pools[limit]
-	p.mu.RUnlock()
+func (s *syncPool) getChanPool(capacity int) *sync.Pool {
+	s.mu.RLock()
+	cp, exists := s.chanPool[capacity]
+	s.mu.RUnlock()
 	if exists {
-		return idle
+		return cp
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	idle, exists = pools[limit]
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp, exists = s.chanPool[capacity]
 	if exists {
-		return idle
+		return cp
 	}
-	idle = &sync.Pool{New: f}
-	pools[limit] = idle
-	return idle
+	cp = &sync.Pool{New: func() any {
+		return make(chan struct{}, capacity)
+	}}
+	s.chanPool[capacity] = cp
+	return cp
 }
 
-func (p *pool) getIdlePool(limit int) *sync.Pool {
-	return p.getPool(p.idlePool, limit, func() any {
-		return make(chan struct{}, limit)
-	})
+func (s *syncPool) getChan(capacity int) (*sync.Pool, chan struct{}) {
+	cp := s.getChanPool(capacity)
+	return cp, cp.Get().(chan struct{})
 }
 
-func (p *pool) getIdleRateLimiter(limit int) *sync.Pool {
-	return p.getPool(p.idleRateLimiter, limit, func() any {
-		return NewRateLimiter(limit)
-	})
+func (s *syncPool) putChan(cp *sync.Pool, ch chan struct{}) {
+	cp.Put(ch)
+}
+
+func (s *syncPool) getRateLimiter(capacity int) *RateLimiter {
+	limiter := s.rateLimiterPool.Get().(*RateLimiter)
+	limiter.SetCapacity(capacity)
+	return limiter
+}
+func (s *syncPool) putRateLimiter(limiter *RateLimiter) {
+	s.rateLimiterPool.Put(limiter)
 }
 
 var emptyFuture = new(Future)
@@ -95,36 +109,36 @@ func (c *Counter) Reset() {
 	c.completed.Store(0)
 }
 
-type TaskPool[T any] struct {
-	mode    Mode
-	limiter *RateLimiter
-	task    chan *Task[T]
-	stop    chan struct{}
-	worker  chan struct{}
-	counter *Counter
-	stopped *atomic.Bool
-	running *atomic.Int64
+type Pool[T any] struct {
+	mode        Mode
+	limiter     *RateLimiter
+	task        chan *Task[T]
+	stop        chan struct{}
+	idle        chan struct{}
+	counter     *Counter
+	stopped     *atomic.Bool
+	runningTask *atomic.Int64
 }
 
-func (t *TaskPool[T]) start() {
-	go t.limiter.Start()
+func (p *Pool[T]) start() {
+	p.limiter.Start()
 	for {
 		select {
-		case <-t.stop:
+		case <-p.stop:
 			return
-		case task := <-t.task:
-			go t.dispatch(task)
+		case task := <-p.task:
+			go p.dispatch(task)
 		}
 	}
 }
 
-// Stop does not affect the submitted tasks, but no new tasks can be submitted
-func (t *TaskPool[T]) Stop() {
-	if t.stopped.CompareAndSwap(false, true) {
-		close(t.stop)
+// Stop no new tasks can be submitted after stop, all running tasks will wait to be completed
+func (p *Pool[T]) Stop() {
+	if p.stopped.CompareAndSwap(false, true) {
+		close(p.stop)
 		for {
-			if t.RunningCounter() == 0 {
-				t.limiter.Stop()
+			if p.runningTask.Load() == 0 {
+				p.limiter.Stop()
 				return
 			}
 			time.Sleep(time.Second)
@@ -132,17 +146,17 @@ func (t *TaskPool[T]) Stop() {
 	}
 }
 
-func (t *TaskPool[T]) dispatch(task *Task[T]) {
-	t.running.Add(1)
-	defer t.running.Add(-1)
-	if task.concurrency > 0 {
-		t.limitedRun(task)
+func (p *Pool[T]) dispatch(task *Task[T]) {
+	p.runningTask.Add(1)
+	defer p.runningTask.Add(-1)
+	if task.maxConcurrency > 0 {
+		p.limitedRun(task)
 	} else {
-		t.unlimitedRun(task)
+		p.unlimitedRun(task)
 	}
 }
 
-func (t *TaskPool[T]) run(f func(T), param T, onPanic func(T, any)) {
+func (p *Pool[T]) run(f func(T), param T, onPanic func(T, any)) {
 	defer func() {
 		if err := recover(); err != nil {
 			if onPanic != nil {
@@ -155,54 +169,53 @@ func (t *TaskPool[T]) run(f func(T), param T, onPanic func(T, any)) {
 			}
 		}
 	}()
-	if t.mode == ConcurrentMode {
-		<-t.worker
+	// limit maximum concurrency in ConcurrentMode
+	if p.mode == ConcurrentMode {
+		<-p.idle
 		defer func() {
-			t.worker <- struct{}{}
+			p.idle <- struct{}{}
 		}()
 	}
-	t.counter.pending.Add(-1)
-	t.counter.running.Add(1)
+	p.counter.pending.Add(-1)
+	p.counter.running.Add(1)
 	f(param)
-	t.counter.running.Add(-1)
-	t.counter.completed.Add(1)
+	p.counter.running.Add(-1)
+	p.counter.completed.Add(1)
 }
 
 // limitedRun
-// in ConcurrentMode Task maximum concurrency is min(Task.concurrency, Capacity)
-// in RateLimiterMode Task maximum qps is min(Task.concurrency, Capacity)
-func (t *TaskPool[T]) limitedRun(task *Task[T]) {
+// in ConcurrentMode Task maximum concurrency is min(Task.maxConcurrency, Pool.limiter.capacity)
+// in RateLimitMode Task maximum qps is min(Task.maxConcurrency, Pool.limiter.capacity)
+func (p *Pool[T]) limitedRun(task *Task[T]) {
 	wg := new(sync.WaitGroup)
-	limit := min(task.concurrency, t.limiter.Capacity())
-	idlePool := poolProvider.getIdlePool(limit)
-	idle := idlePool.Get().(chan struct{})
+	capacity := min(task.maxConcurrency, p.limiter.Capacity())
+	cp, idle := syncPoolProvider.getChan(capacity)
 	defer func() {
 		wg.Wait()
 		task.done()
 		for len(idle) > 0 {
 			<-idle
 		}
-		idlePool.Put(idle)
+		syncPoolProvider.putChan(cp, idle)
 	}()
 
-	if t.mode == RateLimiterMode {
-		rateLimiterPool := poolProvider.getIdleRateLimiter(limit)
-		rateLimiter := rateLimiterPool.Get().(*RateLimiter)
-		defer rateLimiterPool.Put(rateLimiter)
-		defer rateLimiter.Stop()
-		go rateLimiter.Start()
+	if p.mode == RateLimitMode {
+		limiter := syncPoolProvider.getRateLimiter(capacity)
+		limiter.Start()
+		defer syncPoolProvider.putRateLimiter(limiter)
+		defer limiter.Stop()
 		go func() {
 			for {
 				select {
-				case <-rateLimiter.Wait():
+				case <-limiter.Wait():
 					idle <- struct{}{}
-				case <-rateLimiter.stop:
+				case <-limiter.Stopped():
 					return
 				}
 			}
 		}()
 	} else {
-		for range limit {
+		for range capacity {
 			idle <- struct{}{}
 		}
 	}
@@ -212,10 +225,10 @@ func (t *TaskPool[T]) limitedRun(task *Task[T]) {
 		select {
 		case <-task.ctx.Done():
 			return
-		case <-t.limiter.Wait():
+		case <-p.limiter.Wait():
 			wg.Go(func() {
-				t.run(task.taskFunc, param, task.recover)
-				if t.mode == ConcurrentMode {
+				p.run(task.taskFunc, param, task.recover)
+				if p.mode == ConcurrentMode {
 					idle <- struct{}{}
 				}
 			})
@@ -223,14 +236,14 @@ func (t *TaskPool[T]) limitedRun(task *Task[T]) {
 	}
 }
 
-func (t *TaskPool[T]) Counter() *Counter {
-	return t.counter
+func (p *Pool[T]) Counter() *Counter {
+	return p.counter
 }
 
 // unlimitedRun
-// in ConcurrentMode Task maximum concurrency Capacity
-// in RateLimiterMode Task maximum qps is Capacity
-func (t *TaskPool[T]) unlimitedRun(task *Task[T]) {
+// in ConcurrentMode Task maximum maxConcurrency is Pool.limiter.capacity
+// in RateLimitMode Task maximum qps is Pool.limiter.capacity
+func (p *Pool[T]) unlimitedRun(task *Task[T]) {
 	wg := new(sync.WaitGroup)
 	defer func() {
 		wg.Wait()
@@ -241,16 +254,16 @@ func (t *TaskPool[T]) unlimitedRun(task *Task[T]) {
 		select {
 		case <-task.ctx.Done():
 			return
-		case <-t.limiter.Wait():
+		case <-p.limiter.Wait():
 			wg.Go(func() {
-				t.run(task.taskFunc, param, task.recover)
+				p.run(task.taskFunc, param, task.recover)
 			})
 		}
 	}
 }
 
-func (t *TaskPool[T]) Submit(tasks ...*Task[T]) *Future {
-	if t.stopped.Load() {
+func (p *Pool[T]) Submit(tasks ...*Task[T]) *Future {
+	if p.stopped.Load() {
 		return emptyFuture
 	}
 	wg := new(sync.WaitGroup)
@@ -261,24 +274,20 @@ func (t *TaskPool[T]) Submit(tasks ...*Task[T]) *Future {
 		task.wg = wg
 		task.ctx, cancel = context.WithCancel(task.ctx)
 		cancelFuncs = append(cancelFuncs, cancel)
-		t.counter.pending.Add(int64(len(task.param)))
-		t.task <- task
+		p.counter.pending.Add(int64(len(task.param)))
+		p.task <- task
 	}
 	return &Future{wg: wg, cancelFuncs: cancelFuncs}
 }
 
-func (t *TaskPool[T]) RunningCounter() int64 {
-	return t.running.Load()
-}
-
-func (t *TaskPool[T]) Wait(futures ...*Future) {
+func (p *Pool[T]) Wait(futures ...*Future) {
 	for _, future := range futures {
 		future.Wait()
 	}
 }
 
-func NewTaskPool[T any](capacity int, mode Mode) *TaskPool[T] {
-	p := &TaskPool[T]{
+func NewPool[T any](capacity int, mode Mode) *Pool[T] {
+	p := &Pool[T]{
 		mode:    mode,
 		limiter: NewRateLimiter(capacity),
 		task:    make(chan *Task[T], 64),
@@ -288,23 +297,23 @@ func NewTaskPool[T any](capacity int, mode Mode) *TaskPool[T] {
 			pending:   new(atomic.Int64),
 			completed: new(atomic.Int64),
 		},
-		stopped: new(atomic.Bool),
-		running: new(atomic.Int64),
+		stopped:     new(atomic.Bool),
+		runningTask: new(atomic.Int64),
 	}
 	if mode == ConcurrentMode {
-		p.worker = make(chan struct{}, capacity)
+		p.idle = make(chan struct{}, capacity)
 		for range capacity {
-			p.worker <- struct{}{}
+			p.idle <- struct{}{}
 		}
 	}
 	go p.start()
 	return p
 }
 
-func NewConcurrentTaskPool[T any](capacity int) *TaskPool[T] {
-	return NewTaskPool[T](capacity, ConcurrentMode)
+func NewConcurrentPool[T any](capacity int) *Pool[T] {
+	return NewPool[T](capacity, ConcurrentMode)
 }
 
-func NewRateLimiterTaskPool[T any](capacity int) *TaskPool[T] {
-	return NewTaskPool[T](capacity, RateLimiterMode)
+func NewRateLimitPool[T any](capacity int) *Pool[T] {
+	return NewPool[T](capacity, RateLimitMode)
 }

@@ -7,7 +7,7 @@ import (
 )
 
 func TestNewConcurrentTaskPool(t *testing.T) {
-	p := NewConcurrentTaskPool[int](60)
+	p := NewConcurrentPool[int](60)
 	go func() {
 		time.Sleep(2 * time.Second)
 		p.Stop()
@@ -35,7 +35,7 @@ func TestNewConcurrentTaskPool(t *testing.T) {
 		// log.Println(i)
 		time.Sleep(time.Second)
 	}
-	taskBuilder := NewTaskBuilder[int]().WitTaskFunc(f).WithConcurrency(20)
+	taskBuilder := NewTaskBuilder[int]().WitTaskFunc(f).WithMaxConcurrency(20)
 	future1 := p.Submit(taskBuilder.Build(items, items2, items3)...)
 	future2 := p.Submit(taskBuilder.Build(items, items2, items3)...)
 	p.Wait(future1, future2)
@@ -44,7 +44,7 @@ func TestNewConcurrentTaskPool(t *testing.T) {
 }
 
 func TestNewRateLimiterTaskPool(t *testing.T) {
-	p := NewRateLimiterTaskPool[int](60)
+	p := NewRateLimitPool[int](60)
 	counter := p.Counter()
 	go func() {
 		for {
@@ -68,7 +68,7 @@ func TestNewRateLimiterTaskPool(t *testing.T) {
 		// log.Println(i)
 		time.Sleep(time.Second)
 	}
-	taskBuilder := NewTaskBuilder[int]().WitTaskFunc(f).WithConcurrency(20)
+	taskBuilder := NewTaskBuilder[int]().WitTaskFunc(f).WithMaxConcurrency(20)
 	future1 := p.Submit(taskBuilder.Build(items, items2, items3)...)
 	future2 := p.Submit(taskBuilder.Build(items, items2, items3)...)
 	p.Wait(future1, future2)
