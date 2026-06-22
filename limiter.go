@@ -49,6 +49,10 @@ func (r *RateLimiter) Wait() chan struct{} {
 	return r.w
 }
 
+func (r *RateLimiter) Allow() bool {
+	return r.l.Allow()
+}
+
 // NewRateLimiter capacity is the maximum token rate
 func NewRateLimiter(capacity int) *RateLimiter {
 	rl := &RateLimiter{
