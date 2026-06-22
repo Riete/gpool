@@ -122,18 +122,13 @@ func (t *TaskPool[T]) start() {
 func (t *TaskPool[T]) Stop() {
 	if t.stopped.CompareAndSwap(false, true) {
 		close(t.stop)
-		go func() {
-			var once sync.Once
-			for {
-				if t.RunningCounter() == 0 {
-					once.Do(func() {
-						t.limiter.Stop()
-					})
-					return
-				}
-				time.Sleep(time.Second)
+		for {
+			if t.RunningCounter() == 0 {
+				t.limiter.Stop()
+				return
 			}
-		}()
+			time.Sleep(time.Second)
+		}
 	}
 }
 
@@ -195,15 +190,13 @@ func (t *TaskPool[T]) limitedRun(task *Task[T]) {
 		rateLimiter := rateLimiterPool.Get().(*RateLimiter)
 		defer rateLimiterPool.Put(rateLimiter)
 		defer rateLimiter.Stop()
-		stop := make(chan struct{})
-		defer close(stop)
 		go rateLimiter.Start()
 		go func() {
 			for {
 				select {
 				case <-rateLimiter.Wait():
 					idle <- struct{}{}
-				case <-stop:
+				case <-rateLimiter.stop:
 					return
 				}
 			}

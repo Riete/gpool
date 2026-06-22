@@ -7,15 +7,15 @@ import (
 )
 
 type RateLimiter struct {
-	l        *rate.Limiter
-	w        chan struct{}
+	limiter  *rate.Limiter
+	wait     chan struct{}
 	stop     chan struct{}
 	capacity int
 }
 
 func (r *RateLimiter) setCapacity(capacity int) {
-	r.l.SetLimit(rate.Limit(capacity))
-	r.l.SetBurst(capacity)
+	r.limiter.SetLimit(rate.Limit(capacity))
+	r.limiter.SetBurst(capacity)
 }
 
 func (r *RateLimiter) Capacity() int {
@@ -34,8 +34,8 @@ func (r *RateLimiter) Start() {
 		select {
 		case <-r.stop:
 			return
-		case <-time.After(r.l.Reserve().Delay()):
-			r.w <- struct{}{}
+		case <-time.After(r.limiter.Reserve().Delay()):
+			r.wait <- struct{}{}
 		}
 	}
 }
@@ -43,21 +43,24 @@ func (r *RateLimiter) Start() {
 func (r *RateLimiter) Stop() {
 	close(r.stop)
 	r.setCapacity(0)
+	for len(r.wait) > 0 {
+		<-r.wait
+	}
 }
 
 func (r *RateLimiter) Wait() chan struct{} {
-	return r.w
+	return r.wait
 }
 
 func (r *RateLimiter) Allow() bool {
-	return r.l.Allow()
+	return r.limiter.Allow()
 }
 
 // NewRateLimiter capacity is the maximum token rate
 func NewRateLimiter(capacity int) *RateLimiter {
 	rl := &RateLimiter{
-		l:        rate.NewLimiter(rate.Limit(capacity), capacity),
-		w:        make(chan struct{}, capacity),
+		limiter:  rate.NewLimiter(rate.Limit(capacity), capacity),
+		wait:     make(chan struct{}, capacity),
 		capacity: capacity,
 	}
 	return rl
