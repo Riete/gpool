@@ -167,7 +167,6 @@ func (p *Pool[T]) limitedConcurrentRun(task *Task[T]) {
 		}
 		select {
 		case <-task.ctx.Done():
-			idle.Release(1)
 			p.idle.Release(1)
 			return
 		case <-p.limiter.Wait():
