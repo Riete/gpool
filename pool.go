@@ -7,64 +7,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 )
 
 type Mode int64
 
 const ConcurrentMode Mode = 0
 const RateLimitMode Mode = 1
-
-var syncPoolProvider = &syncPool{
-	chanPool: make(map[int]*sync.Pool),
-	rateLimiterPool: &sync.Pool{
-		New: func() any {
-			return NewRateLimiter(0)
-		}},
-}
-
-type syncPool struct {
-	mu              sync.RWMutex
-	chanPool        map[int]*sync.Pool
-	rateLimiterPool *sync.Pool
-}
-
-func (s *syncPool) getChanPool(capacity int) *sync.Pool {
-	s.mu.RLock()
-	cp, exists := s.chanPool[capacity]
-	s.mu.RUnlock()
-	if exists {
-		return cp
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cp, exists = s.chanPool[capacity]
-	if exists {
-		return cp
-	}
-	cp = &sync.Pool{New: func() any {
-		return make(chan struct{}, capacity)
-	}}
-	s.chanPool[capacity] = cp
-	return cp
-}
-
-func (s *syncPool) getChan(capacity int) (*sync.Pool, chan struct{}) {
-	cp := s.getChanPool(capacity)
-	return cp, cp.Get().(chan struct{})
-}
-
-func (s *syncPool) putChan(cp *sync.Pool, ch chan struct{}) {
-	cp.Put(ch)
-}
-
-func (s *syncPool) getRateLimiter(capacity int) *RateLimiter {
-	limiter := s.rateLimiterPool.Get().(*RateLimiter)
-	limiter.SetCapacity(capacity)
-	return limiter
-}
-func (s *syncPool) putRateLimiter(limiter *RateLimiter) {
-	s.rateLimiterPool.Put(limiter)
-}
 
 var emptyFuture = new(Future)
 
@@ -114,7 +64,7 @@ type Pool[T any] struct {
 	limiter     *RateLimiter
 	task        chan *Task[T]
 	stop        chan struct{}
-	idle        chan struct{}
+	idle        *semaphore.Weighted
 	counter     *Counter
 	stopped     *atomic.Bool
 	runningTask *atomic.Int64
@@ -132,20 +82,6 @@ func (p *Pool[T]) start() {
 	}
 }
 
-// Stop no new tasks can be submitted after stop, all running tasks will wait to be completed
-func (p *Pool[T]) Stop() {
-	if p.stopped.CompareAndSwap(false, true) {
-		close(p.stop)
-		for {
-			if p.runningTask.Load() == 0 {
-				p.limiter.Stop()
-				return
-			}
-			time.Sleep(time.Second)
-		}
-	}
-}
-
 func (p *Pool[T]) dispatch(task *Task[T]) {
 	p.runningTask.Add(1)
 	defer p.runningTask.Add(-1)
@@ -153,6 +89,22 @@ func (p *Pool[T]) dispatch(task *Task[T]) {
 		p.limitedRun(task)
 	} else {
 		p.unlimitedRun(task)
+	}
+}
+
+func (p *Pool[T]) limitedRun(task *Task[T]) {
+	if p.mode == RateLimitMode {
+		p.limitedRateLimitRun(task)
+	} else {
+		p.limitedConcurrentRun(task)
+	}
+}
+
+func (p *Pool[T]) unlimitedRun(task *Task[T]) {
+	if p.mode == RateLimitMode {
+		p.unlimitedRateLimitRun(task)
+	} else {
+		p.unlimitedConcurrentRun(task)
 	}
 }
 
@@ -169,13 +121,6 @@ func (p *Pool[T]) run(f func(T), param T, onPanic func(T, any)) {
 			}
 		}
 	}()
-	// limit maximum concurrency in ConcurrentMode
-	if p.mode == ConcurrentMode {
-		<-p.idle
-		defer func() {
-			p.idle <- struct{}{}
-		}()
-	}
 	p.counter.pending.Add(-1)
 	p.counter.running.Add(1)
 	f(param)
@@ -183,54 +128,94 @@ func (p *Pool[T]) run(f func(T), param T, onPanic func(T, any)) {
 	p.counter.completed.Add(1)
 }
 
-// limitedRun
-// in ConcurrentMode Task maximum concurrency is min(Task.maxConcurrency, Pool.limiter.capacity)
-// in RateLimitMode Task maximum qps is min(Task.maxConcurrency, Pool.limiter.capacity)
-func (p *Pool[T]) limitedRun(task *Task[T]) {
+// limitedRateLimitRun maximum qps is min(Task.maxConcurrency, Pool.limiter.capacity)
+func (p *Pool[T]) limitedRateLimitRun(task *Task[T]) {
 	wg := new(sync.WaitGroup)
-	capacity := min(task.maxConcurrency, p.limiter.Capacity())
-	cp, idle := syncPoolProvider.getChan(capacity)
+	taskLimiter := limiterProvider.Get().(*RateLimiter)
+	taskLimiter.SetCapacity(min(task.maxConcurrency, p.limiter.Capacity()))
+	taskLimiter.Start()
 	defer func() {
 		wg.Wait()
 		task.done()
-		for len(idle) > 0 {
-			<-idle
-		}
-		syncPoolProvider.putChan(cp, idle)
+		taskLimiter.Stop()
+		limiterProvider.Put(taskLimiter)
 	}()
 
-	if p.mode == RateLimitMode {
-		limiter := syncPoolProvider.getRateLimiter(capacity)
-		limiter.Start()
-		defer syncPoolProvider.putRateLimiter(limiter)
-		defer limiter.Stop()
-		go func() {
-			for {
-				select {
-				case <-limiter.Wait():
-					idle <- struct{}{}
-				case <-limiter.Stopped():
-					return
-				}
-			}
-		}()
-	} else {
-		for range capacity {
-			idle <- struct{}{}
-		}
-	}
-
 	for _, param := range task.param {
-		<-idle
+		<-taskLimiter.Wait()
 		select {
 		case <-task.ctx.Done():
 			return
 		case <-p.limiter.Wait():
 			wg.Go(func() {
 				p.run(task.taskFunc, param, task.recover)
-				if p.mode == ConcurrentMode {
-					idle <- struct{}{}
-				}
+			})
+		}
+	}
+}
+
+// limitedConcurrentRun maximum concurrency is min(Task.maxConcurrency, Pool.limiter.capacity)
+func (p *Pool[T]) limitedConcurrentRun(task *Task[T]) {
+	wg := new(sync.WaitGroup)
+	idle := semaphore.NewWeighted(int64(min(task.maxConcurrency, p.limiter.Capacity())))
+	defer func() {
+		wg.Wait()
+		task.done()
+	}()
+
+	for _, param := range task.param {
+		_ = idle.Acquire(task.ctx, 1)
+		_ = p.idle.Acquire(task.ctx, 1)
+		select {
+		case <-task.ctx.Done():
+			return
+		case <-p.limiter.Wait():
+			wg.Go(func() {
+				p.run(task.taskFunc, param, task.recover)
+				p.idle.Release(1)
+				idle.Release(1)
+			})
+		}
+	}
+}
+
+// unlimitedRateLimitRun maximum qps is Pool.limiter.capacity
+func (p *Pool[T]) unlimitedRateLimitRun(task *Task[T]) {
+	wg := new(sync.WaitGroup)
+	defer func() {
+		wg.Wait()
+		task.done()
+	}()
+
+	for _, param := range task.param {
+		select {
+		case <-task.ctx.Done():
+			return
+		case <-p.limiter.Wait():
+			wg.Go(func() {
+				p.run(task.taskFunc, param, task.recover)
+			})
+		}
+	}
+}
+
+// unlimitedConcurrentRun maximum concurrency is Pool.limiter.capacity
+func (p *Pool[T]) unlimitedConcurrentRun(task *Task[T]) {
+	wg := new(sync.WaitGroup)
+	defer func() {
+		wg.Wait()
+		task.done()
+	}()
+
+	for _, param := range task.param {
+		_ = p.idle.Acquire(task.ctx, 1)
+		select {
+		case <-task.ctx.Done():
+			return
+		case <-p.limiter.Wait():
+			wg.Go(func() {
+				p.run(task.taskFunc, param, task.recover)
+				p.idle.Release(1)
 			})
 		}
 	}
@@ -238,28 +223,6 @@ func (p *Pool[T]) limitedRun(task *Task[T]) {
 
 func (p *Pool[T]) Counter() *Counter {
 	return p.counter
-}
-
-// unlimitedRun
-// in ConcurrentMode Task maximum maxConcurrency is Pool.limiter.capacity
-// in RateLimitMode Task maximum qps is Pool.limiter.capacity
-func (p *Pool[T]) unlimitedRun(task *Task[T]) {
-	wg := new(sync.WaitGroup)
-	defer func() {
-		wg.Wait()
-		task.done()
-	}()
-
-	for _, param := range task.param {
-		select {
-		case <-task.ctx.Done():
-			return
-		case <-p.limiter.Wait():
-			wg.Go(func() {
-				p.run(task.taskFunc, param, task.recover)
-			})
-		}
-	}
 }
 
 func (p *Pool[T]) Submit(tasks ...*Task[T]) *Future {
@@ -278,6 +241,20 @@ func (p *Pool[T]) Submit(tasks ...*Task[T]) *Future {
 		p.task <- task
 	}
 	return &Future{wg: wg, cancelFuncs: cancelFuncs}
+}
+
+// Stop no new tasks can be submitted after stop, all running tasks will wait to be completed
+func (p *Pool[T]) Stop() {
+	if p.stopped.CompareAndSwap(false, true) {
+		close(p.stop)
+		for {
+			if p.runningTask.Load() == 0 {
+				p.limiter.Stop()
+				return
+			}
+			time.Sleep(time.Second)
+		}
+	}
 }
 
 func (p *Pool[T]) Wait(futures ...*Future) {
@@ -301,10 +278,7 @@ func NewPool[T any](capacity int, mode Mode) *Pool[T] {
 		runningTask: new(atomic.Int64),
 	}
 	if mode == ConcurrentMode {
-		p.idle = make(chan struct{}, capacity)
-		for range capacity {
-			p.idle <- struct{}{}
-		}
+		p.idle = semaphore.NewWeighted(int64(capacity))
 	}
 	go p.start()
 	return p

@@ -1,10 +1,15 @@
 package gpool
 
 import (
+	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
 )
+
+var limiterProvider = &sync.Pool{New: func() any {
+	return NewRateLimiter(0)
+}}
 
 type RateLimiter struct {
 	limiter  *rate.Limiter
