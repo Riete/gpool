@@ -49,18 +49,20 @@ func (t *TaskBuilder[T]) WithTaskFunc(f func(context.Context, T)) *TaskBuilder[T
 	return t
 }
 
-func (t *TaskBuilder[T]) Build(params ...[]T) []*Task[T] {
+func (t *TaskBuilder[T]) BuildTask(param []T) *Task[T] {
+	return &Task[T]{
+		ctx:            t.ctx,
+		taskFunc:       t.taskFunc,
+		param:          param,
+		maxConcurrency: t.maxConcurrency,
+		recover:        t.recover,
+	}
+}
+
+func (t *TaskBuilder[T]) BuildTasks(params ...[]T) []*Task[T] {
 	tasks := make([]*Task[T], 0, len(params))
 	for _, param := range params {
-		tasks = append(tasks,
-			&Task[T]{
-				ctx:            t.ctx,
-				taskFunc:       t.taskFunc,
-				param:          param,
-				maxConcurrency: t.maxConcurrency,
-				recover:        t.recover,
-			},
-		)
+		tasks = append(tasks, t.BuildTask(param))
 	}
 	return tasks
 }

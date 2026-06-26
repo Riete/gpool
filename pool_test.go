@@ -36,9 +36,9 @@ func TestNewConcurrentTaskPool(t *testing.T) {
 		// log.Println(i)
 		time.Sleep(time.Second)
 	}
-	taskBuilder := NewTaskBuilder[int]().WithTaskFunc(f).WithMaxConcurrency(20)
-	future1 := p.Submit(taskBuilder.Build(items, items2, items3)...)
-	future2 := p.Submit(taskBuilder.Build(items, items2, items3)...)
+	taskBuilder := NewTaskBuilder[int]().WithTaskFunc(f).WithMaxConcurrency(5)
+	future1 := p.Submit(taskBuilder.BuildTasks(items, items2, items3)...)
+	future2 := p.Submit(taskBuilder.BuildTasks(items, items2, items3)...)
 	p.Wait(future1, future2)
 	fmt.Println("running task:", counter.Running(), "pending task:", counter.Pending(), "completed task:", counter.Completed())
 	time.Sleep(3 * time.Second)
@@ -69,9 +69,9 @@ func TestNewRateLimiterTaskPool(t *testing.T) {
 		// log.Println(i)
 		time.Sleep(time.Second)
 	}
-	taskBuilder := NewTaskBuilder[int]().WithTaskFunc(f).WithMaxConcurrency(20)
-	future1 := p.Submit(taskBuilder.Build(items, items2, items3)...)
-	future2 := p.Submit(taskBuilder.Build(items, items2, items3)...)
+	taskBuilder := NewTaskBuilder[int]().WithTaskFunc(f).WithMaxConcurrency(5)
+	future1 := p.Submit(taskBuilder.BuildTasks(items, items2, items3)...)
+	future2 := p.Submit(taskBuilder.BuildTasks(items, items2, items3)...)
 	p.Wait(future1, future2)
 	fmt.Println("running task:", counter.Running(), "pending task:", counter.Pending(), "completed task:", counter.Completed())
 }

@@ -44,15 +44,19 @@ func (r *RateLimiter) SetCapacity(capacity int) {
 func (r *RateLimiter) Pause() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.setCapacity(0)
-	r.paused = true
+	if r.started && !r.paused {
+		r.setCapacity(0)
+		r.paused = true
+	}
 }
 
 func (r *RateLimiter) Resume() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.setCapacity(r.capacity)
-	r.paused = false
+	if r.started && r.paused {
+		r.setCapacity(r.capacity)
+		r.paused = false
+	}
 }
 
 func (r *RateLimiter) dispatch() {
@@ -99,6 +103,7 @@ func (r *RateLimiter) Start() {
 		r.stop = make(chan struct{})
 		r.started = true
 		r.stopped = false
+		r.paused = false
 		r.wg.Go(func() {
 			r.dispatch()
 		})
@@ -111,9 +116,9 @@ func (r *RateLimiter) Stop() {
 	if !r.stopped {
 		r.setCapacity(0)
 		close(r.stop)
-		r.stopped = true
 		r.started = false
-		r.paused = false
+		r.stopped = true
+		r.paused = true
 		r.wg.Wait()
 		for len(r.wait) > 0 {
 			<-r.wait
