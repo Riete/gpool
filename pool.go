@@ -63,22 +63,17 @@ type Pool[T any] struct {
 	mode        Mode
 	limiter     *RateLimiter
 	task        chan *Task[T]
-	stop        chan struct{}
 	idle        *semaphore.Weighted
 	counter     *Counter
-	stopped     *atomic.Bool
+	stopped     bool
 	runningTask *atomic.Int64
+	mu          sync.Mutex
 }
 
 func (p *Pool[T]) start() {
 	p.limiter.Start()
-	for {
-		select {
-		case <-p.stop:
-			return
-		case task := <-p.task:
-			go p.dispatch(task)
-		}
+	for task := range p.task {
+		go p.dispatch(task)
 	}
 }
 
@@ -226,7 +221,9 @@ func (p *Pool[T]) Counter() *Counter {
 }
 
 func (p *Pool[T]) Submit(tasks ...*Task[T]) *Future {
-	if p.stopped.Load() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stopped {
 		return emptyFuture
 	}
 	wg := new(sync.WaitGroup)
@@ -245,8 +242,11 @@ func (p *Pool[T]) Submit(tasks ...*Task[T]) *Future {
 
 // Stop no new tasks can be submitted after stop, all running tasks will wait to be completed
 func (p *Pool[T]) Stop() {
-	if p.stopped.CompareAndSwap(false, true) {
-		close(p.stop)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.stopped {
+		p.stopped = true
+		close(p.task)
 		for {
 			if p.runningTask.Load() == 0 {
 				p.limiter.Stop()
@@ -268,13 +268,11 @@ func NewPool[T any](capacity int, mode Mode) *Pool[T] {
 		mode:    mode,
 		limiter: NewRateLimiter(capacity),
 		task:    make(chan *Task[T], 64),
-		stop:    make(chan struct{}),
 		counter: &Counter{
 			running:   new(atomic.Int64),
 			pending:   new(atomic.Int64),
 			completed: new(atomic.Int64),
 		},
-		stopped:     new(atomic.Bool),
 		runningTask: new(atomic.Int64),
 	}
 	if mode == ConcurrentMode {
