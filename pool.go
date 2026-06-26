@@ -103,7 +103,7 @@ func (p *Pool[T]) unlimitedRun(task *Task[T]) {
 	}
 }
 
-func (p *Pool[T]) run(f func(T), param T, onPanic func(T, any)) {
+func (p *Pool[T]) run(ctx context.Context, f func(context.Context, T), param T, onPanic func(T, any)) {
 	defer func() {
 		if err := recover(); err != nil {
 			if onPanic != nil {
@@ -118,7 +118,7 @@ func (p *Pool[T]) run(f func(T), param T, onPanic func(T, any)) {
 	}()
 	p.counter.pending.Add(-1)
 	p.counter.running.Add(1)
-	f(param)
+	f(ctx, param)
 	p.counter.running.Add(-1)
 	p.counter.completed.Add(1)
 }
@@ -143,7 +143,7 @@ func (p *Pool[T]) limitedRateLimitRun(task *Task[T]) {
 			return
 		case <-p.limiter.Wait():
 			wg.Go(func() {
-				p.run(task.taskFunc, param, task.recover)
+				p.run(task.ctx, task.taskFunc, param, task.recover)
 			})
 		}
 	}
@@ -159,14 +159,20 @@ func (p *Pool[T]) limitedConcurrentRun(task *Task[T]) {
 	}()
 
 	for _, param := range task.param {
-		_ = idle.Acquire(task.ctx, 1)
-		_ = p.idle.Acquire(task.ctx, 1)
+		if err := idle.Acquire(task.ctx, 1); err != nil {
+			return
+		}
+		if err := p.idle.Acquire(task.ctx, 1); err != nil {
+			return
+		}
 		select {
 		case <-task.ctx.Done():
+			idle.Release(1)
+			p.idle.Release(1)
 			return
 		case <-p.limiter.Wait():
 			wg.Go(func() {
-				p.run(task.taskFunc, param, task.recover)
+				p.run(task.ctx, task.taskFunc, param, task.recover)
 				p.idle.Release(1)
 				idle.Release(1)
 			})
@@ -188,7 +194,7 @@ func (p *Pool[T]) unlimitedRateLimitRun(task *Task[T]) {
 			return
 		case <-p.limiter.Wait():
 			wg.Go(func() {
-				p.run(task.taskFunc, param, task.recover)
+				p.run(task.ctx, task.taskFunc, param, task.recover)
 			})
 		}
 	}
@@ -203,13 +209,16 @@ func (p *Pool[T]) unlimitedConcurrentRun(task *Task[T]) {
 	}()
 
 	for _, param := range task.param {
-		_ = p.idle.Acquire(task.ctx, 1)
+		if err := p.idle.Acquire(task.ctx, 1); err != nil {
+			return
+		}
 		select {
 		case <-task.ctx.Done():
+			p.idle.Release(1)
 			return
 		case <-p.limiter.Wait():
 			wg.Go(func() {
-				p.run(task.taskFunc, param, task.recover)
+				p.run(task.ctx, task.taskFunc, param, task.recover)
 				p.idle.Release(1)
 			})
 		}
@@ -243,17 +252,19 @@ func (p *Pool[T]) Submit(tasks ...*Task[T]) *Future {
 // Stop no new tasks can be submitted after stop, all running tasks will wait to be completed
 func (p *Pool[T]) Stop() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.stopped {
-		p.stopped = true
-		close(p.task)
-		for {
-			if p.runningTask.Load() == 0 {
-				p.limiter.Stop()
-				return
-			}
-			time.Sleep(time.Second)
+	if p.stopped {
+		p.mu.Unlock()
+		return
+	}
+	p.stopped = true
+	close(p.task)
+	p.mu.Unlock()
+	for {
+		if p.runningTask.Load() == 0 {
+			p.limiter.Stop()
+			return
 		}
+		time.Sleep(time.Second)
 	}
 }
 

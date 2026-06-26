@@ -1,6 +1,7 @@
 package gpool
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -31,11 +32,11 @@ func TestNewConcurrentTaskPool(t *testing.T) {
 	for i := 201; i < 301; i++ {
 		items3 = append(items3, i)
 	}
-	f := func(i int) {
+	f := func(_ context.Context, i int) {
 		// log.Println(i)
 		time.Sleep(time.Second)
 	}
-	taskBuilder := NewTaskBuilder[int]().WitTaskFunc(f).WithMaxConcurrency(20)
+	taskBuilder := NewTaskBuilder[int]().WithTaskFunc(f).WithMaxConcurrency(20)
 	future1 := p.Submit(taskBuilder.Build(items, items2, items3)...)
 	future2 := p.Submit(taskBuilder.Build(items, items2, items3)...)
 	p.Wait(future1, future2)
@@ -64,11 +65,11 @@ func TestNewRateLimiterTaskPool(t *testing.T) {
 	for i := 201; i < 301; i++ {
 		items3 = append(items3, i)
 	}
-	f := func(i int) {
+	f := func(_ context.Context, i int) {
 		// log.Println(i)
 		time.Sleep(time.Second)
 	}
-	taskBuilder := NewTaskBuilder[int]().WitTaskFunc(f).WithMaxConcurrency(20)
+	taskBuilder := NewTaskBuilder[int]().WithTaskFunc(f).WithMaxConcurrency(20)
 	future1 := p.Submit(taskBuilder.Build(items, items2, items3)...)
 	future2 := p.Submit(taskBuilder.Build(items, items2, items3)...)
 	p.Wait(future1, future2)

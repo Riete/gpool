@@ -11,7 +11,7 @@ import (
 // Use TaskBuilder to build task
 type Task[T any] struct {
 	ctx            context.Context
-	taskFunc       func(T)
+	taskFunc       func(context.Context, T)
 	param          []T
 	maxConcurrency int
 	recover        func(T, any)
@@ -24,7 +24,7 @@ func (t *Task[T]) done() {
 
 type TaskBuilder[T any] struct {
 	ctx            context.Context
-	taskFunc       func(T)
+	taskFunc       func(context.Context, T)
 	maxConcurrency int
 	recover        func(T, any)
 }
@@ -44,7 +44,7 @@ func (t *TaskBuilder[T]) WithRecover(recover func(T, any)) *TaskBuilder[T] {
 	return t
 }
 
-func (t *TaskBuilder[T]) WitTaskFunc(f func(T)) *TaskBuilder[T] {
+func (t *TaskBuilder[T]) WithTaskFunc(f func(context.Context, T)) *TaskBuilder[T] {
 	t.taskFunc = f
 	return t
 }
