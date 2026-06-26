@@ -267,8 +267,18 @@ func (p *Pool[T]) Pause() {
 	p.limiter.Pause()
 }
 
-func (p *Pool[T]) Unpause() {
-	p.limiter.Unpause()
+func (p *Pool[T]) Resume() {
+	p.limiter.Resume()
+}
+
+func (p *Pool[T]) IsPaused() bool {
+	return p.limiter.IsPaused()
+}
+
+func (p *Pool[T]) IsStopped() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stopped
 }
 
 func NewPool[T any](capacity int, mode Mode) *Pool[T] {

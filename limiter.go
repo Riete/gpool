@@ -17,6 +17,7 @@ type RateLimiter struct {
 	stop     chan struct{}
 	stopped  bool
 	started  bool
+	paused   bool
 	capacity int
 	mu       sync.Mutex
 }
@@ -31,11 +32,17 @@ func (r *RateLimiter) SetCapacity(capacity int) {
 }
 
 func (r *RateLimiter) Pause() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.limiter.SetBurst(0)
+	r.paused = true
 }
 
-func (r *RateLimiter) Unpause() {
+func (r *RateLimiter) Resume() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.limiter.SetBurst(r.capacity)
+	r.paused = false
 }
 
 func (r *RateLimiter) Start() {
@@ -92,6 +99,12 @@ func (r *RateLimiter) IsStarted() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.started
+}
+
+func (r *RateLimiter) IsPaused() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.paused
 }
 
 func (r *RateLimiter) Wait() chan struct{} {
