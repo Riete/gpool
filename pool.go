@@ -66,7 +66,6 @@ type Pool[T any] struct {
 	idle        *semaphore.Weighted
 	counter     *Counter
 	stopped     bool
-	paused      bool
 	runningTask *atomic.Int64
 	mu          sync.Mutex
 }
@@ -265,21 +264,11 @@ func (p *Pool[T]) Wait(futures ...*Future) {
 }
 
 func (p *Pool[T]) Pause() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.paused && !p.stopped {
-		p.limiter.Stop()
-		p.paused = true
-	}
+	p.limiter.Pause()
 }
 
 func (p *Pool[T]) Unpause() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.paused && !p.stopped {
-		p.limiter.Start()
-		p.paused = false
-	}
+	p.limiter.Unpause()
 }
 
 func NewPool[T any](capacity int, mode Mode) *Pool[T] {

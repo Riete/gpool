@@ -15,12 +15,10 @@ type RateLimiter struct {
 	limiter  *rate.Limiter
 	wait     chan struct{}
 	stop     chan struct{}
+	stopped  bool
+	started  bool
 	capacity int
-}
-
-func (r *RateLimiter) setCapacity(capacity int) {
-	r.limiter.SetLimit(rate.Limit(capacity))
-	r.limiter.SetBurst(capacity)
+	mu       sync.Mutex
 }
 
 func (r *RateLimiter) Capacity() int {
@@ -29,33 +27,71 @@ func (r *RateLimiter) Capacity() int {
 
 func (r *RateLimiter) SetCapacity(capacity int) {
 	r.capacity = capacity
+	r.limiter.SetLimit(rate.Limit(capacity))
+}
+
+func (r *RateLimiter) Pause() {
+	r.limiter.SetBurst(0)
+}
+
+func (r *RateLimiter) Unpause() {
+	r.limiter.SetBurst(r.capacity)
 }
 
 func (r *RateLimiter) Start() {
-	r.setCapacity(r.capacity)
-	r.stop = make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-r.stop:
-				return
-			case <-time.After(r.limiter.Reserve().Delay()):
-				r.wait <- struct{}{}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.started {
+		r.limiter.SetBurst(r.capacity)
+		r.stop = make(chan struct{})
+		r.started = true
+		r.stopped = false
+		go func() {
+			for {
+				select {
+				case <-r.stop:
+					return
+				default:
+					if r.limiter.Burst() == 0 {
+						time.Sleep(time.Second)
+					} else {
+						time.Sleep(r.limiter.Reserve().Delay())
+						r.wait <- struct{}{}
+					}
+				}
 			}
-		}
-	}()
+		}()
+	}
 }
 
 func (r *RateLimiter) Stop() {
-	r.setCapacity(0)
-	close(r.stop)
-	for len(r.wait) > 0 {
-		<-r.wait
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.stopped {
+		r.limiter.SetBurst(0)
+		close(r.stop)
+		for len(r.wait) > 0 {
+			<-r.wait
+		}
+		r.stopped = true
+		r.started = false
 	}
 }
 
 func (r *RateLimiter) Stopped() chan struct{} {
 	return r.stop
+}
+
+func (r *RateLimiter) IsStopped() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stopped
+}
+
+func (r *RateLimiter) IsStarted() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.started
 }
 
 func (r *RateLimiter) Wait() chan struct{} {
