@@ -116,7 +116,11 @@ func (p *Pool[T]) unlimitedRun(task *Task[T]) {
 }
 
 func (p *Pool[T]) run(ctx context.Context, f func(context.Context, T), param T, onPanic func(T, any)) {
+	p.counter.pending.Add(-1)
+	p.counter.running.Add(1)
 	defer func() {
+		p.counter.running.Add(-1)
+		p.counter.completed.Add(1)
 		if err := recover(); err != nil {
 			if onPanic != nil {
 				onPanic(param, err)
@@ -128,11 +132,7 @@ func (p *Pool[T]) run(ctx context.Context, f func(context.Context, T), param T, 
 			}
 		}
 	}()
-	p.counter.pending.Add(-1)
-	p.counter.running.Add(1)
 	f(ctx, param)
-	p.counter.running.Add(-1)
-	p.counter.completed.Add(1)
 }
 
 // limitedRateLimitRun maximum qps is min(Task.maxConcurrency, Pool.limiter.capacity)
