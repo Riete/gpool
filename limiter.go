@@ -7,16 +7,11 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var limiterProvider = &sync.Pool{New: func() any {
-	return NewRateLimiter(0)
-}}
-
 type RateLimiter struct {
 	limiter  *rate.Limiter
 	wait     chan struct{}
 	stop     chan struct{}
 	stopped  bool
-	started  bool
 	paused   bool
 	capacity int
 	wg       sync.WaitGroup
@@ -38,13 +33,15 @@ func (r *RateLimiter) SetCapacity(capacity int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.capacity = capacity
-	r.setCapacity(capacity)
+	if !r.paused {
+		r.setCapacity(capacity)
+	}
 }
 
 func (r *RateLimiter) Pause() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.started && !r.paused {
+	if !r.paused {
 		r.setCapacity(0)
 		r.paused = true
 	}
@@ -53,7 +50,7 @@ func (r *RateLimiter) Pause() {
 func (r *RateLimiter) Resume() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.started && r.paused {
+	if !r.stopped && r.paused {
 		r.setCapacity(r.capacity)
 		r.paused = false
 	}
@@ -67,11 +64,7 @@ func (r *RateLimiter) dispatch() {
 		default:
 		}
 
-		r.mu.Lock()
-		burst := r.limiter.Burst()
-		r.mu.Unlock()
-
-		if burst == 0 {
+		if r.limiter.Burst() == 0 {
 			select {
 			case <-r.stop:
 				return
@@ -95,28 +88,12 @@ func (r *RateLimiter) dispatch() {
 	}
 }
 
-func (r *RateLimiter) Start() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !r.started {
-		r.setCapacity(r.capacity)
-		r.stop = make(chan struct{})
-		r.started = true
-		r.stopped = false
-		r.paused = false
-		r.wg.Go(func() {
-			r.dispatch()
-		})
-	}
-}
-
 func (r *RateLimiter) Stop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.stopped {
 		r.setCapacity(0)
 		close(r.stop)
-		r.started = false
 		r.stopped = true
 		r.paused = true
 		r.wg.Wait()
@@ -126,7 +103,7 @@ func (r *RateLimiter) Stop() {
 	}
 }
 
-func (r *RateLimiter) Stopped() chan struct{} {
+func (r *RateLimiter) Stopped() <-chan struct{} {
 	return r.stop
 }
 
@@ -134,12 +111,6 @@ func (r *RateLimiter) IsStopped() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.stopped
-}
-
-func (r *RateLimiter) IsStarted() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.started
 }
 
 func (r *RateLimiter) IsPaused() bool {
@@ -154,9 +125,14 @@ func (r *RateLimiter) Wait() chan struct{} {
 
 // NewRateLimiter capacity is the maximum token rate
 func NewRateLimiter(capacity int) *RateLimiter {
-	return &RateLimiter{
+	limiter := &RateLimiter{
 		limiter:  rate.NewLimiter(rate.Limit(capacity), capacity),
+		stop:     make(chan struct{}),
 		wait:     make(chan struct{}, 64),
 		capacity: capacity,
 	}
+	limiter.wg.Go(func() {
+		limiter.dispatch()
+	})
+	return limiter
 }
