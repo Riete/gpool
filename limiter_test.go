@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// TestRateLimiterCapacity expects Capacity() to return 42 after NewRateLimiter(42).
 func TestRateLimiterCapacity(t *testing.T) {
 	l := NewRateLimiter(42)
 	defer l.Stop()
@@ -14,6 +15,7 @@ func TestRateLimiterCapacity(t *testing.T) {
 	}
 }
 
+// TestRateLimiterDispatchesTokens expects at least one token within 2s after the limiter starts.
 func TestRateLimiterDispatchesTokens(t *testing.T) {
 	l := NewRateLimiter(100)
 	defer l.Stop()
@@ -25,6 +27,9 @@ func TestRateLimiterDispatchesTokens(t *testing.T) {
 	}
 }
 
+// TestRateLimiterPauseResume expects:
+//   - after Pause: IsPaused()==true and no token within 200ms;
+//   - after Resume: IsPaused()==false and a token within 2s.
 func TestRateLimiterPauseResume(t *testing.T) {
 	l := NewRateLimiter(100)
 	defer l.Stop()
@@ -57,6 +62,9 @@ func TestRateLimiterPauseResume(t *testing.T) {
 	}
 }
 
+// TestRateLimiterSetCapacityWhilePaused expects:
+//   - SetCapacity while paused updates the field only; no tokens while paused;
+//   - after Resume, tokens dispatch at the new capacity.
 func TestRateLimiterSetCapacityWhilePaused(t *testing.T) {
 	l := NewRateLimiter(10)
 	defer l.Stop()
@@ -86,6 +94,10 @@ func TestRateLimiterSetCapacityWhilePaused(t *testing.T) {
 	}
 }
 
+// TestRateLimiterStop expects:
+//   - after Stop: IsStopped()==true and IsPaused()==true;
+//   - Stopped() channel closed;
+//   - repeated Stop does not panic.
 func TestRateLimiterStop(t *testing.T) {
 	l := NewRateLimiter(100)
 
@@ -115,6 +127,7 @@ func TestRateLimiterStop(t *testing.T) {
 	l.Stop() // idempotent
 }
 
+// TestRateLimiterResumeAfterStopNoOp expects Resume after Stop to be a no-op; IsStopped() remains true.
 func TestRateLimiterResumeAfterStopNoOp(t *testing.T) {
 	l := NewRateLimiter(100)
 	l.Stop()
