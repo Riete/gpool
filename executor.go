@@ -1,4 +1,4 @@
-package gpool
+package conrate
 
 import (
 	"context"
@@ -12,12 +12,12 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-var ErrPoolStopped = errors.New("pool stopped")
+var ErrExecutorStopped = errors.New("executor stopped")
 
-type Mode int64
+type ExecutorMode int64
 
-const ConcurrentMode Mode = 0
-const RateLimitMode Mode = 1
+const ConcurrencyMode ExecutorMode = 0
+const RateLimitMode ExecutorMode = 1
 
 type Future struct {
 	wg          *sync.WaitGroup
@@ -71,8 +71,8 @@ func (c *Counter) Reset() {
 	c.canceled.Store(0)
 }
 
-type Pool[T any] struct {
-	mode        Mode
+type Executor[T any] struct {
+	mode        ExecutorMode
 	limiter     *RateLimiter
 	task        chan *Task[T]
 	idle        *semaphore.Weighted
@@ -83,44 +83,44 @@ type Pool[T any] struct {
 	mu          sync.Mutex
 }
 
-func (p *Pool[T]) start() {
-	for task := range p.task {
-		go p.dispatch(task)
+func (e *Executor[T]) start() {
+	for task := range e.task {
+		go e.dispatch(task)
 	}
 }
 
-func (p *Pool[T]) dispatch(task *Task[T]) {
-	p.runningTask.Add(1)
-	defer p.runningTask.Add(-1)
+func (e *Executor[T]) dispatch(task *Task[T]) {
+	e.runningTask.Add(1)
+	defer e.runningTask.Add(-1)
 	if task.maxConcurrency > 0 {
-		p.limitedRun(task)
+		e.limitedRun(task)
 	} else {
-		p.unlimitedRun(task)
+		e.unlimitedRun(task)
 	}
 }
 
-func (p *Pool[T]) limitedRun(task *Task[T]) {
-	if p.mode == RateLimitMode {
-		p.limitedRateLimitRun(task)
+func (e *Executor[T]) limitedRun(task *Task[T]) {
+	if e.mode == RateLimitMode {
+		e.limitedRateLimitRun(task)
 	} else {
-		p.limitedConcurrentRun(task)
+		e.limitedConcurrentRun(task)
 	}
 }
 
-func (p *Pool[T]) unlimitedRun(task *Task[T]) {
-	if p.mode == RateLimitMode {
-		p.unlimitedRateLimitRun(task)
+func (e *Executor[T]) unlimitedRun(task *Task[T]) {
+	if e.mode == RateLimitMode {
+		e.unlimitedRateLimitRun(task)
 	} else {
-		p.unlimitedConcurrentRun(task)
+		e.unlimitedConcurrentRun(task)
 	}
 }
 
-func (p *Pool[T]) run(ctx context.Context, f func(context.Context, T), param T, onPanic func(T, any)) {
-	p.counter.pending.Add(-1)
-	p.counter.running.Add(1)
+func (e *Executor[T]) run(ctx context.Context, f func(context.Context, T), param T, onPanic func(T, any)) {
+	e.counter.pending.Add(-1)
+	e.counter.running.Add(1)
 	defer func() {
-		p.counter.running.Add(-1)
-		p.counter.completed.Add(1)
+		e.counter.running.Add(-1)
+		e.counter.completed.Add(1)
 		if err := recover(); err != nil {
 			if onPanic != nil {
 				onPanic(param, err)
@@ -135,15 +135,15 @@ func (p *Pool[T]) run(ctx context.Context, f func(context.Context, T), param T, 
 	f(ctx, param)
 }
 
-// limitedRateLimitRun maximum qps is min(Task.maxConcurrency, Pool.limiter.capacity)
-func (p *Pool[T]) limitedRateLimitRun(task *Task[T]) {
+// limitedRateLimitRun maximum qps is min(Task.maxConcurrency, Executor.limiter.capacity)
+func (e *Executor[T]) limitedRateLimitRun(task *Task[T]) {
 	wg := new(sync.WaitGroup)
-	taskLimiter := NewRateLimiter(min(task.maxConcurrency, p.limiter.Capacity()))
+	taskLimiter := NewRateLimiter(min(task.maxConcurrency, e.limiter.Capacity()))
 	canceled := new(atomic.Int64)
 	canceled.Store(int64(len(task.param)))
 	defer func() {
-		p.counter.canceled.Add(canceled.Load())
-		p.counter.pending.Add(-canceled.Load())
+		e.counter.canceled.Add(canceled.Load())
+		e.counter.pending.Add(-canceled.Load())
 	}()
 	defer taskLimiter.Stop()
 	defer task.done()
@@ -152,34 +152,34 @@ func (p *Pool[T]) limitedRateLimitRun(task *Task[T]) {
 	for _, param := range task.param {
 		select {
 		case <-taskLimiter.Wait():
-		case <-p.stop:
+		case <-e.stop:
 			return
 		case <-task.ctx.Done():
 			return
 		}
 		select {
-		case <-p.stop:
+		case <-e.stop:
 			return
 		case <-task.ctx.Done():
 			return
-		case <-p.limiter.Wait():
+		case <-e.limiter.Wait():
 			wg.Go(func() {
 				canceled.Add(-1)
-				p.run(task.ctx, task.taskFunc, param, task.recover)
+				e.run(task.ctx, task.taskFunc, param, task.recover)
 			})
 		}
 	}
 }
 
-// limitedConcurrentRun maximum concurrency is min(Task.maxConcurrency, Pool.limiter.capacity)
-func (p *Pool[T]) limitedConcurrentRun(task *Task[T]) {
+// limitedConcurrentRun maximum concurrency is min(Task.maxConcurrency, Executor.limiter.capacity)
+func (e *Executor[T]) limitedConcurrentRun(task *Task[T]) {
 	wg := new(sync.WaitGroup)
-	idle := semaphore.NewWeighted(int64(min(task.maxConcurrency, p.limiter.Capacity())))
+	idle := semaphore.NewWeighted(int64(min(task.maxConcurrency, e.limiter.Capacity())))
 	canceled := new(atomic.Int64)
 	canceled.Store(int64(len(task.param)))
 	defer func() {
-		p.counter.canceled.Add(canceled.Load())
-		p.counter.pending.Add(-canceled.Load())
+		e.counter.canceled.Add(canceled.Load())
+		e.counter.pending.Add(-canceled.Load())
 	}()
 	defer task.done()
 	defer wg.Wait()
@@ -188,99 +188,99 @@ func (p *Pool[T]) limitedConcurrentRun(task *Task[T]) {
 		if err := idle.Acquire(task.ctx, 1); err != nil {
 			return
 		}
-		if err := p.idle.Acquire(task.ctx, 1); err != nil {
+		if err := e.idle.Acquire(task.ctx, 1); err != nil {
 			idle.Release(1)
 			return
 		}
 		select {
-		case <-p.stop:
+		case <-e.stop:
 			idle.Release(1)
-			p.idle.Release(1)
+			e.idle.Release(1)
 			return
 		case <-task.ctx.Done():
 			idle.Release(1)
-			p.idle.Release(1)
+			e.idle.Release(1)
 			return
-		case <-p.limiter.Wait():
+		case <-e.limiter.Wait():
 			wg.Go(func() {
 				canceled.Add(-1)
-				p.run(task.ctx, task.taskFunc, param, task.recover)
-				p.idle.Release(1)
+				e.run(task.ctx, task.taskFunc, param, task.recover)
+				e.idle.Release(1)
 				idle.Release(1)
 			})
 		}
 	}
 }
 
-// unlimitedRateLimitRun maximum qps is Pool.limiter.capacity
-func (p *Pool[T]) unlimitedRateLimitRun(task *Task[T]) {
+// unlimitedRateLimitRun maximum qps is Executor.limiter.capacity
+func (e *Executor[T]) unlimitedRateLimitRun(task *Task[T]) {
 	wg := new(sync.WaitGroup)
 	canceled := new(atomic.Int64)
 	canceled.Store(int64(len(task.param)))
 	defer func() {
-		p.counter.canceled.Add(canceled.Load())
-		p.counter.pending.Add(-canceled.Load())
+		e.counter.canceled.Add(canceled.Load())
+		e.counter.pending.Add(-canceled.Load())
 	}()
 	defer task.done()
 	defer wg.Wait()
 
 	for _, param := range task.param {
 		select {
-		case <-p.stop:
+		case <-e.stop:
 			return
 		case <-task.ctx.Done():
 			return
-		case <-p.limiter.Wait():
+		case <-e.limiter.Wait():
 			wg.Go(func() {
 				canceled.Add(-1)
-				p.run(task.ctx, task.taskFunc, param, task.recover)
+				e.run(task.ctx, task.taskFunc, param, task.recover)
 			})
 		}
 	}
 }
 
-// unlimitedConcurrentRun maximum concurrency is Pool.limiter.capacity
-func (p *Pool[T]) unlimitedConcurrentRun(task *Task[T]) {
+// unlimitedConcurrentRun maximum concurrency is Executor.limiter.capacity
+func (e *Executor[T]) unlimitedConcurrentRun(task *Task[T]) {
 	wg := new(sync.WaitGroup)
 	canceled := new(atomic.Int64)
 	canceled.Store(int64(len(task.param)))
 	defer func() {
-		p.counter.canceled.Add(canceled.Load())
-		p.counter.pending.Add(-canceled.Load())
+		e.counter.canceled.Add(canceled.Load())
+		e.counter.pending.Add(-canceled.Load())
 	}()
 	defer task.done()
 	defer wg.Wait()
 
 	for _, param := range task.param {
-		if err := p.idle.Acquire(task.ctx, 1); err != nil {
+		if err := e.idle.Acquire(task.ctx, 1); err != nil {
 			return
 		}
 		select {
-		case <-p.stop:
-			p.idle.Release(1)
+		case <-e.stop:
+			e.idle.Release(1)
 			return
 		case <-task.ctx.Done():
-			p.idle.Release(1)
+			e.idle.Release(1)
 			return
-		case <-p.limiter.Wait():
+		case <-e.limiter.Wait():
 			wg.Go(func() {
 				canceled.Add(-1)
-				p.run(task.ctx, task.taskFunc, param, task.recover)
-				p.idle.Release(1)
+				e.run(task.ctx, task.taskFunc, param, task.recover)
+				e.idle.Release(1)
 			})
 		}
 	}
 }
 
-func (p *Pool[T]) Counter() *Counter {
-	return p.counter
+func (e *Executor[T]) Counter() *Counter {
+	return e.counter
 }
 
-func (p *Pool[T]) Submit(tasks ...*Task[T]) *Future {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.stopped {
-		return &Future{err: ErrPoolStopped}
+func (e *Executor[T]) Submit(tasks ...*Task[T]) *Future {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.stopped {
+		return &Future{err: ErrExecutorStopped}
 	}
 	wg := new(sync.WaitGroup)
 	wg.Add(len(tasks))
@@ -290,27 +290,27 @@ func (p *Pool[T]) Submit(tasks ...*Task[T]) *Future {
 		task.wg = wg
 		task.ctx, cancel = context.WithCancel(task.ctx)
 		cancelFuncs = append(cancelFuncs, cancel)
-		p.counter.pending.Add(int64(len(task.param)))
-		p.task <- task
+		e.counter.pending.Add(int64(len(task.param)))
+		e.task <- task
 	}
 	return &Future{wg: wg, cancelFuncs: cancelFuncs}
 }
 
 // GracefulStop no new tasks can be submitted after stop, all running tasks will wait to be completed until timeout
-func (p *Pool[T]) GracefulStop(timeout time.Duration) {
-	p.mu.Lock()
-	if p.stopped {
-		p.mu.Unlock()
+func (e *Executor[T]) GracefulStop(timeout time.Duration) {
+	e.mu.Lock()
+	if e.stopped {
+		e.mu.Unlock()
 		return
 	}
-	p.stopped = true
-	close(p.task)
-	p.mu.Unlock()
-	defer p.limiter.Stop()
-	defer close(p.stop)
+	e.stopped = true
+	close(e.task)
+	e.mu.Unlock()
+	defer e.limiter.Stop()
+	defer close(e.stop)
 	deadline := time.Now().Add(timeout)
 	for {
-		if time.Now().After(deadline) || p.runningTask.Load() == 0 {
+		if time.Now().After(deadline) || e.runningTask.Load() == 0 {
 			return
 		}
 		time.Sleep(time.Second)
@@ -318,45 +318,45 @@ func (p *Pool[T]) GracefulStop(timeout time.Duration) {
 }
 
 // Stop immediately stop
-func (p *Pool[T]) Stop() {
-	p.mu.Lock()
-	if p.stopped {
-		p.mu.Unlock()
+func (e *Executor[T]) Stop() {
+	e.mu.Lock()
+	if e.stopped {
+		e.mu.Unlock()
 		return
 	}
-	defer p.mu.Unlock()
-	p.stopped = true
-	close(p.task)
-	close(p.stop)
-	p.limiter.Stop()
+	defer e.mu.Unlock()
+	e.stopped = true
+	close(e.task)
+	close(e.stop)
+	e.limiter.Stop()
 }
 
-func (p *Pool[T]) Wait(futures ...*Future) {
+func (e *Executor[T]) Wait(futures ...*Future) {
 	for _, future := range futures {
 		future.Wait()
 	}
 }
 
-func (p *Pool[T]) Pause() {
-	p.limiter.Pause()
+func (e *Executor[T]) Pause() {
+	e.limiter.Pause()
 }
 
-func (p *Pool[T]) Resume() {
-	p.limiter.Resume()
+func (e *Executor[T]) Resume() {
+	e.limiter.Resume()
 }
 
-func (p *Pool[T]) IsPaused() bool {
-	return p.limiter.IsPaused()
+func (e *Executor[T]) IsPaused() bool {
+	return e.limiter.IsPaused()
 }
 
-func (p *Pool[T]) IsStopped() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.stopped
+func (e *Executor[T]) IsStopped() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.stopped
 }
 
-func NewPool[T any](capacity int, mode Mode) *Pool[T] {
-	p := &Pool[T]{
+func NewExecutor[T any](capacity int, mode ExecutorMode) *Executor[T] {
+	p := &Executor[T]{
 		mode:    mode,
 		limiter: NewRateLimiter(capacity),
 		task:    make(chan *Task[T], 64),
@@ -369,17 +369,17 @@ func NewPool[T any](capacity int, mode Mode) *Pool[T] {
 		},
 		runningTask: new(atomic.Int64),
 	}
-	if mode == ConcurrentMode {
+	if mode == ConcurrencyMode {
 		p.idle = semaphore.NewWeighted(int64(capacity))
 	}
 	go p.start()
 	return p
 }
 
-func NewConcurrentPool[T any](capacity int) *Pool[T] {
-	return NewPool[T](capacity, ConcurrentMode)
+func NewConcurrentExecutor[T any](maxConcurrency int) *Executor[T] {
+	return NewExecutor[T](maxConcurrency, ConcurrencyMode)
 }
 
-func NewRateLimitPool[T any](capacity int) *Pool[T] {
-	return NewPool[T](capacity, RateLimitMode)
+func NewRateLimitExecutor[T any](maxQPS int) *Executor[T] {
+	return NewExecutor[T](maxQPS, RateLimitMode)
 }

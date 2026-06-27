@@ -1,4 +1,4 @@
-package gpool
+package conrate
 
 import (
 	"testing"

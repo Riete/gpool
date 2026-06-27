@@ -1,12 +1,12 @@
-package gpool
+package conrate
 
 import (
 	"context"
 	"sync"
 )
 
-// Task runtime maxConcurrency will use min(Task.maxConcurrency, Pool.limiter.capacity) if Task.maxConcurrency > 0
-// else Pool.limiter.capacity in both ConcurrentMode and RateLimitMode
+// Task runtime maxConcurrency will use min(Task.maxConcurrency, Executor.limiter.capacity) if Task.maxConcurrency > 0
+// else Executor.limiter.capacity in both ConcurrencyMode and RateLimitMode
 // On task panic, Task.recover is preferred over default recover (print panic message and goroutine stack trace)
 // Use TaskBuilder to build task
 type Task[T any] struct {

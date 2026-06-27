@@ -1,4 +1,4 @@
-module github.com/riete/gpool
+module github.com/riete/conrate
 
 go 1.25.3
 

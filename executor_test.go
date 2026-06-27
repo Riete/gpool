@@ -1,4 +1,4 @@
-package gpool
+package conrate
 
 import (
 	"context"
@@ -49,33 +49,33 @@ func assertCounterZeroPending(t *testing.T, c *Counter) {
 	}
 }
 
-// TestSubmitAfterStop expects Submit after Stop to return Future.Error()==ErrPoolStopped; Wait must not block.
+// TestSubmitAfterStop expects Submit after Stop to return Future.Error()==ErrExecutorStopped; Wait must not block.
 func TestSubmitAfterStop(t *testing.T) {
-	p := NewConcurrentPool[int](4)
+	p := NewConcurrentExecutor[int](4)
 	p.Stop()
 
 	f := p.Submit(NewTaskBuilder[int]().WithTaskFunc(func(context.Context, int) {}).BuildTask(ints(1)))
-	if !errors.Is(f.Error(), ErrPoolStopped) {
-		t.Fatalf("Error() = %v, want ErrPoolStopped", f.Error())
+	if !errors.Is(f.Error(), ErrExecutorStopped) {
+		t.Fatalf("Error() = %v, want ErrExecutorStopped", f.Error())
 	}
 	f.Wait()
 }
 
 // TestDoubleStop expects two consecutive Stop calls not to panic and IsStopped()==true.
 func TestDoubleStop(t *testing.T) {
-	p := NewConcurrentPool[int](4)
+	p := NewConcurrentExecutor[int](4)
 	p.Stop()
 	p.Stop()
 	if !p.IsStopped() {
-		t.Fatal("expected pool stopped")
+		t.Fatal("expected executor stopped")
 	}
 }
 
-// TestConcurrentPoolUnlimitedCompletesAll expects:
-//   - concurrent mode with no task-level maxConcurrency: all n params run;
+// TestConcurrentExecutorUnlimitedCompletesAll expects:
+//   - Concurrency mode with no task-level maxConcurrency: all n params run;
 //   - Pending/Running return to zero and Completed()==n.
-func TestConcurrentPoolUnlimitedCompletesAll(t *testing.T) {
-	p := NewConcurrentPool[int](4)
+func TestConcurrentExecutorUnlimitedCompletesAll(t *testing.T) {
+	p := NewConcurrentExecutor[int](4)
 	defer p.Stop()
 
 	const n = 20
@@ -95,11 +95,11 @@ func TestConcurrentPoolUnlimitedCompletesAll(t *testing.T) {
 	}
 }
 
-// TestConcurrentPoolLimitedTaskConcurrency expects:
+// TestConcurrentExecutorLimitedTaskConcurrency expects:
 //   - WithMaxConcurrency(3): at most 3 params running at once;
 //   - Completed()==n after all finish.
-func TestConcurrentPoolLimitedTaskConcurrency(t *testing.T) {
-	p := NewConcurrentPool[int](8)
+func TestConcurrentExecutorLimitedTaskConcurrency(t *testing.T) {
+	p := NewConcurrentExecutor[int](8)
 	defer p.Stop()
 
 	var mu sync.Mutex
@@ -133,9 +133,9 @@ func TestConcurrentPoolLimitedTaskConcurrency(t *testing.T) {
 	}
 }
 
-// TestConcurrentPoolPoolCapacity expects pool capacity=2 to cap concurrent params at 2.
-func TestConcurrentPoolPoolCapacity(t *testing.T) {
-	p := NewConcurrentPool[int](2)
+// TestConcurrentExecutorCapacity expects executor capacity=2 to cap concurrency params at 2.
+func TestConcurrentExecutorCapacity(t *testing.T) {
+	p := NewConcurrentExecutor[int](2)
 	defer p.Stop()
 
 	var mu sync.Mutex
@@ -163,9 +163,9 @@ func TestConcurrentPoolPoolCapacity(t *testing.T) {
 	}
 }
 
-// TestRateLimitPoolUnlimitedCompletesAll expects rate-limit mode without task-level limit to run all n params.
-func TestRateLimitPoolUnlimitedCompletesAll(t *testing.T) {
-	p := NewRateLimitPool[int](200)
+// TestRateLimitExecutorUnlimitedCompletesAll expects rate-limit mode without task-level limit to run all n params.
+func TestRateLimitExecutorUnlimitedCompletesAll(t *testing.T) {
+	p := NewRateLimitExecutor[int](200)
 	defer p.Stop()
 
 	const n = 15
@@ -181,10 +181,10 @@ func TestRateLimitPoolUnlimitedCompletesAll(t *testing.T) {
 	}
 }
 
-// TestRateLimitPoolLimitedTaskConcurrency expects:
+// TestRateLimitExecutorLimitedTaskConcurrency expects:
 //   - rate-limit mode with WithMaxConcurrency(5): all n params complete via limitedRateLimitRun.
-func TestRateLimitPoolLimitedTaskConcurrency(t *testing.T) {
-	p := NewRateLimitPool[int](100)
+func TestRateLimitExecutorLimitedTaskConcurrency(t *testing.T) {
+	p := NewRateLimitExecutor[int](100)
 	defer p.Stop()
 
 	const n = 10
@@ -207,7 +207,7 @@ func TestRateLimitPoolLimitedTaskConcurrency(t *testing.T) {
 //   - params not yet run after Cancel count toward Canceled;
 //   - completed + canceled == n, Pending/Running zero, and canceled > 0.
 func TestFutureCancel(t *testing.T) {
-	p := NewConcurrentPool[int](8)
+	p := NewConcurrentExecutor[int](8)
 	defer p.Stop()
 
 	const n = 100
@@ -241,7 +241,7 @@ func TestFutureCancel(t *testing.T) {
 
 // TestCounterAccountingAfterComplete expects Pending==0, Completed==n, and Canceled==0 after normal completion.
 func TestCounterAccountingAfterComplete(t *testing.T) {
-	p := NewConcurrentPool[int](4)
+	p := NewConcurrentExecutor[int](4)
 	defer p.Stop()
 
 	const n = 12
@@ -259,11 +259,11 @@ func TestCounterAccountingAfterComplete(t *testing.T) {
 	}
 }
 
-// TestPauseResumeConcurrentPool expects:
+// TestPauseResumeConcurrentExecutor expects:
 //   - Pause/Resume to toggle IsPaused correctly;
 //   - all tasks to finish after Resume with Completed()==n.
-func TestPauseResumeConcurrentPool(t *testing.T) {
-	p := NewConcurrentPool[int](10)
+func TestPauseResumeConcurrentExecutor(t *testing.T) {
+	p := NewConcurrentExecutor[int](10)
 	defer p.Stop()
 
 	const n = 30
@@ -274,12 +274,12 @@ func TestPauseResumeConcurrentPool(t *testing.T) {
 	time.Sleep(80 * time.Millisecond)
 	p.Pause()
 	if !p.IsPaused() {
-		t.Fatal("expected pool paused")
+		t.Fatal("expected executor paused")
 	}
 
 	p.Resume()
 	if p.IsPaused() {
-		t.Fatal("expected pool resumed")
+		t.Fatal("expected executor resumed")
 	}
 
 	p.Wait(f)
@@ -291,7 +291,7 @@ func TestPauseResumeConcurrentPool(t *testing.T) {
 
 // TestStopWhilePaused expects Stop() while paused to return within 3s, not block forever on a paused limiter.
 func TestStopWhilePaused(t *testing.T) {
-	p := NewConcurrentPool[int](4)
+	p := NewConcurrentExecutor[int](4)
 
 	block := make(chan struct{})
 	f := p.Submit(NewTaskBuilder[int]().WithTaskFunc(func(context.Context, int) {
@@ -310,7 +310,7 @@ func TestStopWhilePaused(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
-		t.Fatal("Stop() blocked while pool paused")
+		t.Fatal("Stop() blocked while executor paused")
 	}
 	close(block)
 	p.Wait(f)
@@ -320,7 +320,7 @@ func TestStopWhilePaused(t *testing.T) {
 //   - GracefulStop with inflight work to finish after tasks complete;
 //   - IsStopped()==true and ran==n.
 func TestGracefulStop(t *testing.T) {
-	p := NewConcurrentPool[int](4)
+	p := NewConcurrentExecutor[int](4)
 
 	const n = 8
 	var ran atomic.Int64
@@ -343,7 +343,7 @@ func TestGracefulStop(t *testing.T) {
 	<-done
 
 	if !p.IsStopped() {
-		t.Fatal("expected pool stopped after GracefulStop()")
+		t.Fatal("expected executo stopped after GracefulStop()")
 	}
 	if got := ran.Load(); got != n {
 		t.Fatalf("ran %d items, want %d", got, n)
@@ -354,7 +354,7 @@ func TestGracefulStop(t *testing.T) {
 //   - WithRecover invoked once per panicking param (3 times total);
 //   - panics still count as Completed; Pending/Running return to zero.
 func TestTaskPanicRecover(t *testing.T) {
-	p := NewConcurrentPool[int](2)
+	p := NewConcurrentExecutor[int](2)
 	defer p.Stop()
 
 	var recovered atomic.Int64
@@ -379,7 +379,7 @@ func TestTaskPanicRecover(t *testing.T) {
 
 // TestMultipleSubmitWait expects both submits (5 + 7 params) to run for a total of 12 executions.
 func TestMultipleSubmitWait(t *testing.T) {
-	p := NewConcurrentPool[int](4)
+	p := NewConcurrentExecutor[int](4)
 	defer p.Stop()
 
 	var total atomic.Int64
