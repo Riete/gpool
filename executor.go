@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/riete/round-robin/swrr"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -80,10 +81,32 @@ type Executor[T any] struct {
 	stopped     bool
 	stop        chan struct{}
 	runningTask *atomic.Int64
+	swrr        *swrr.SmoothWeightedRoundRobin[*Task[T]]
 	mu          sync.Mutex
 }
 
+func (e *Executor[T]) swrrSchedule() {
+	for {
+		select {
+		case <-e.stop:
+			return
+		case <-e.limiter.wait:
+			item := e.swrr.Next()
+			if item == nil {
+				continue
+			}
+			select {
+			case <-e.stop:
+				return
+			case item.Data().wait <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
 func (e *Executor[T]) start() {
+	go e.swrrSchedule()
 	for task := range e.task {
 		go e.dispatch(task)
 	}
@@ -115,15 +138,16 @@ func (e *Executor[T]) unlimitedRun(task *Task[T]) {
 	}
 }
 
-func (e *Executor[T]) run(ctx context.Context, f func(context.Context, T), param T, onPanic func(T, any)) {
+func (e *Executor[T]) run(task *Task[T], param T, canceled *atomic.Int64) {
+	canceled.Add(-1)
 	e.counter.pending.Add(-1)
 	e.counter.running.Add(1)
 	defer func() {
 		e.counter.running.Add(-1)
 		e.counter.completed.Add(1)
 		if err := recover(); err != nil {
-			if onPanic != nil {
-				onPanic(param, err)
+			if task.recover != nil {
+				task.recover(param, err)
 			} else {
 				// default recover
 				buf := make([]byte, 64<<10)
@@ -132,7 +156,7 @@ func (e *Executor[T]) run(ctx context.Context, f func(context.Context, T), param
 			}
 		}
 	}()
-	f(ctx, param)
+	task.taskFunc(task.ctx, param)
 }
 
 // limitedRateLimitRun maximum qps is min(Task.maxConcurrency, Executor.limiter.capacity)
@@ -147,11 +171,12 @@ func (e *Executor[T]) limitedRateLimitRun(task *Task[T]) {
 	}()
 	defer taskLimiter.Stop()
 	defer task.done()
+	defer e.swrr.Remove(task.weightedItem)
 	defer wg.Wait()
 
 	for _, param := range task.param {
 		select {
-		case <-taskLimiter.Wait():
+		case <-taskLimiter.wait:
 		case <-e.stop:
 			return
 		case <-task.ctx.Done():
@@ -162,10 +187,9 @@ func (e *Executor[T]) limitedRateLimitRun(task *Task[T]) {
 			return
 		case <-task.ctx.Done():
 			return
-		case <-e.limiter.Wait():
+		case <-task.wait:
 			wg.Go(func() {
-				canceled.Add(-1)
-				e.run(task.ctx, task.taskFunc, param, task.recover)
+				e.run(task, param, canceled)
 			})
 		}
 	}
@@ -182,6 +206,7 @@ func (e *Executor[T]) limitedConcurrentRun(task *Task[T]) {
 		e.counter.pending.Add(-canceled.Load())
 	}()
 	defer task.done()
+	defer e.swrr.Remove(task.weightedItem)
 	defer wg.Wait()
 
 	for _, param := range task.param {
@@ -201,10 +226,9 @@ func (e *Executor[T]) limitedConcurrentRun(task *Task[T]) {
 			idle.Release(1)
 			e.idle.Release(1)
 			return
-		case <-e.limiter.Wait():
+		case <-task.wait:
 			wg.Go(func() {
-				canceled.Add(-1)
-				e.run(task.ctx, task.taskFunc, param, task.recover)
+				e.run(task, param, canceled)
 				e.idle.Release(1)
 				idle.Release(1)
 			})
@@ -222,6 +246,7 @@ func (e *Executor[T]) unlimitedRateLimitRun(task *Task[T]) {
 		e.counter.pending.Add(-canceled.Load())
 	}()
 	defer task.done()
+	defer e.swrr.Remove(task.weightedItem)
 	defer wg.Wait()
 
 	for _, param := range task.param {
@@ -230,10 +255,9 @@ func (e *Executor[T]) unlimitedRateLimitRun(task *Task[T]) {
 			return
 		case <-task.ctx.Done():
 			return
-		case <-e.limiter.Wait():
+		case <-task.wait:
 			wg.Go(func() {
-				canceled.Add(-1)
-				e.run(task.ctx, task.taskFunc, param, task.recover)
+				e.run(task, param, canceled)
 			})
 		}
 	}
@@ -249,6 +273,7 @@ func (e *Executor[T]) unlimitedConcurrentRun(task *Task[T]) {
 		e.counter.pending.Add(-canceled.Load())
 	}()
 	defer task.done()
+	defer e.swrr.Remove(task.weightedItem)
 	defer wg.Wait()
 
 	for _, param := range task.param {
@@ -262,10 +287,9 @@ func (e *Executor[T]) unlimitedConcurrentRun(task *Task[T]) {
 		case <-task.ctx.Done():
 			e.idle.Release(1)
 			return
-		case <-e.limiter.Wait():
+		case <-task.wait:
 			wg.Go(func() {
-				canceled.Add(-1)
-				e.run(task.ctx, task.taskFunc, param, task.recover)
+				e.run(task, param, canceled)
 				e.idle.Release(1)
 			})
 		}
@@ -291,6 +315,8 @@ func (e *Executor[T]) Submit(tasks ...*Task[T]) *Future {
 		task.ctx, cancel = context.WithCancel(task.ctx)
 		cancelFuncs = append(cancelFuncs, cancel)
 		e.counter.pending.Add(int64(len(task.param)))
+		task.weightedItem = swrr.NewWeightedItem[*Task[T]](task, task.weight)
+		e.swrr.Add(task.weightedItem)
 		e.task <- task
 	}
 	return &Future{wg: wg, cancelFuncs: cancelFuncs}
@@ -368,6 +394,7 @@ func NewExecutor[T any](capacity int, mode ExecutorMode) *Executor[T] {
 			canceled:  new(atomic.Int64),
 		},
 		runningTask: new(atomic.Int64),
+		swrr:        swrr.New[*Task[T]](),
 	}
 	if mode == ConcurrencyMode {
 		p.idle = semaphore.NewWeighted(int64(capacity))

@@ -3,11 +3,14 @@ package conrate
 import (
 	"context"
 	"sync"
+
+	"github.com/riete/round-robin/swrr"
 )
 
 // Task runtime maxConcurrency will use min(Task.maxConcurrency, Executor.limiter.capacity) if Task.maxConcurrency > 0
 // else Executor.limiter.capacity in both ConcurrencyMode and RateLimitMode
 // On task panic, Task.recover is preferred over default recover (print panic message and goroutine stack trace)
+// Task weight is used for SWRR scheduling.
 // Use TaskBuilder to build task
 type Task[T any] struct {
 	ctx            context.Context
@@ -15,6 +18,9 @@ type Task[T any] struct {
 	param          []T
 	maxConcurrency int
 	recover        func(T, any)
+	weight         int64
+	wait           chan struct{}
+	weightedItem   *swrr.WeightedItem[*Task[T]]
 	wg             *sync.WaitGroup
 }
 
@@ -27,6 +33,7 @@ type TaskBuilder[T any] struct {
 	taskFunc       func(context.Context, T)
 	maxConcurrency int
 	recover        func(T, any)
+	weight         int64
 }
 
 func (t *TaskBuilder[T]) WithContext(ctx context.Context) *TaskBuilder[T] {
@@ -44,6 +51,14 @@ func (t *TaskBuilder[T]) WithRecover(recover func(T, any)) *TaskBuilder[T] {
 	return t
 }
 
+func (t *TaskBuilder[T]) WithWeight(weight int64) *TaskBuilder[T] {
+	if weight < 1 {
+		weight = 1
+	}
+	t.weight = weight
+	return t
+}
+
 func (t *TaskBuilder[T]) WithTaskFunc(f func(context.Context, T)) *TaskBuilder[T] {
 	t.taskFunc = f
 	return t
@@ -56,6 +71,8 @@ func (t *TaskBuilder[T]) BuildTask(param []T) *Task[T] {
 		param:          param,
 		maxConcurrency: t.maxConcurrency,
 		recover:        t.recover,
+		weight:         t.weight,
+		wait:           make(chan struct{}, t.weight),
 	}
 }
 
@@ -68,5 +85,5 @@ func (t *TaskBuilder[T]) BuildTasks(params ...[]T) []*Task[T] {
 }
 
 func NewTaskBuilder[T any]() *TaskBuilder[T] {
-	return &TaskBuilder[T]{ctx: context.Background()}
+	return &TaskBuilder[T]{ctx: context.Background(), weight: 1}
 }

@@ -409,3 +409,30 @@ func TestBuildTasks(t *testing.T) {
 		t.Fatalf("unexpected param lengths: %d, %d", len(tasks[0].param), len(tasks[1].param))
 	}
 }
+
+func TestWeighted(t *testing.T) {
+	c1 := new(atomic.Int64)
+	c2 := new(atomic.Int64)
+	c3 := new(atomic.Int64)
+	go func() {
+		for {
+			time.Sleep(time.Second)
+			t.Log("c1", c1.Load(), "c2", c2.Load(), "c3", c3.Load())
+		}
+	}()
+	task1 := NewTaskBuilder[int]().WithWeight(10).WithMaxConcurrency(10).WithTaskFunc(func(_ context.Context, _ int) {
+		c1.Add(1)
+		time.Sleep(time.Second)
+	}).BuildTask(ints(50))
+	task2 := NewTaskBuilder[int]().WithWeight(1).WithMaxConcurrency(10).WithTaskFunc(func(_ context.Context, _ int) {
+		c2.Add(1)
+		time.Sleep(time.Second)
+	}).BuildTask(ints(50))
+	task3 := NewTaskBuilder[int]().WithWeight(1).WithMaxConcurrency(10).WithTaskFunc(func(_ context.Context, _ int) {
+		c3.Add(1)
+		time.Sleep(time.Second)
+	}).BuildTask(ints(50))
+	executor := NewConcurrentExecutor[int](10)
+	executor.Wait(executor.Submit(task2, task1, task3))
+	time.Sleep(10 * time.Second)
+}

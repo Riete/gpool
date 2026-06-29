@@ -1,7 +1,10 @@
 module github.com/riete/conrate
 
-go 1.25.3
+go 1.25.9
 
 require golang.org/x/time v0.15.0
 
-require golang.org/x/sync v0.20.0 // indirect
+require (
+	github.com/riete/round-robin v0.0.2 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+)
