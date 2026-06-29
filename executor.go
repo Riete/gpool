@@ -315,7 +315,12 @@ func (e *Executor[T]) Submit(tasks ...*Task[T]) *Future {
 		task.ctx, cancel = context.WithCancel(task.ctx)
 		cancelFuncs = append(cancelFuncs, cancel)
 		e.counter.pending.Add(int64(len(task.param)))
-		task.weightedItem = swrr.NewWeightedItem[*Task[T]](task, task.weight)
+		task.weightedItem = swrr.NewWeightedItem[*Task[T]](task, int64(task.weight))
+		if task.maxConcurrency > 0 {
+			task.wait = make(chan struct{}, min(task.weight, task.maxConcurrency, e.limiter.capacity))
+		} else {
+			task.wait = make(chan struct{}, min(task.weight, e.limiter.capacity))
+		}
 		e.swrr.Add(task.weightedItem)
 		e.task <- task
 	}

@@ -18,7 +18,7 @@ type Task[T any] struct {
 	param          []T
 	maxConcurrency int
 	recover        func(T, any)
-	weight         int64
+	weight         int
 	wait           chan struct{}
 	weightedItem   *swrr.WeightedItem[*Task[T]]
 	wg             *sync.WaitGroup
@@ -33,7 +33,7 @@ type TaskBuilder[T any] struct {
 	taskFunc       func(context.Context, T)
 	maxConcurrency int
 	recover        func(T, any)
-	weight         int64
+	weight         int
 }
 
 func (t *TaskBuilder[T]) WithContext(ctx context.Context) *TaskBuilder[T] {
@@ -51,7 +51,7 @@ func (t *TaskBuilder[T]) WithRecover(recover func(T, any)) *TaskBuilder[T] {
 	return t
 }
 
-func (t *TaskBuilder[T]) WithWeight(weight int64) *TaskBuilder[T] {
+func (t *TaskBuilder[T]) WithWeight(weight int) *TaskBuilder[T] {
 	if weight < 1 {
 		weight = 1
 	}
@@ -72,7 +72,6 @@ func (t *TaskBuilder[T]) BuildTask(param []T) *Task[T] {
 		maxConcurrency: t.maxConcurrency,
 		recover:        t.recover,
 		weight:         t.weight,
-		wait:           make(chan struct{}, t.weight),
 	}
 }
 
