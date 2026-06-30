@@ -85,7 +85,7 @@ type Executor[T any] struct {
 	mu          sync.Mutex
 }
 
-func (e *Executor[T]) swrrSchedule() {
+func (e *Executor[T]) schedule() {
 	for {
 		select {
 		case <-e.stop:
@@ -106,7 +106,7 @@ func (e *Executor[T]) swrrSchedule() {
 }
 
 func (e *Executor[T]) start() {
-	go e.swrrSchedule()
+	go e.schedule()
 	for task := range e.task {
 		go e.dispatch(task)
 	}

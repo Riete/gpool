@@ -414,31 +414,31 @@ func TestWeighted(t *testing.T) {
 	c1 := new(atomic.Int64)
 	c2 := new(atomic.Int64)
 	c3 := new(atomic.Int64)
-	executor := NewConcurrentExecutor[int](5)
+	executor := NewConcurrentExecutor[int](9)
 	go func() {
 		for {
 			time.Sleep(time.Second)
 			t.Log("c1", c1.Load(), "c2", c2.Load(), "c3", c3.Load(), executor.Counter().Running())
 		}
 	}()
-	task1 := NewTaskBuilder[int]().WithWeight(10).WithMaxConcurrency(5).WithTaskFunc(func(_ context.Context, _ int) {
+	task1 := NewTaskBuilder[int]().WithWeight(2).WithMaxConcurrency(3).WithTaskFunc(func(_ context.Context, _ int) {
 		c1.Add(1)
-		time.Sleep(5 * time.Second)
-	}).BuildTask(ints(50))
-	task2 := NewTaskBuilder[int]().WithWeight(1).WithMaxConcurrency(5).WithTaskFunc(func(_ context.Context, _ int) {
-		c2.Add(1)
-		time.Sleep(5 * time.Second)
-	}).BuildTask(ints(50))
-	task3 := NewTaskBuilder[int]().WithWeight(1).WithMaxConcurrency(5).WithTaskFunc(func(_ context.Context, _ int) {
-		c3.Add(1)
-		time.Sleep(5 * time.Second)
-	}).BuildTask(ints(50))
-	go func() {
 		time.Sleep(2 * time.Second)
-		executor.Pause()
-		time.Sleep(10 * time.Second)
-		executor.Resume()
-	}()
+	}).BuildTask(ints(50))
+	task2 := NewTaskBuilder[int]().WithWeight(1).WithMaxConcurrency(3).WithTaskFunc(func(_ context.Context, _ int) {
+		c2.Add(1)
+		time.Sleep(2 * time.Second)
+	}).BuildTask(ints(50))
+	task3 := NewTaskBuilder[int]().WithWeight(1).WithMaxConcurrency(3).WithTaskFunc(func(_ context.Context, _ int) {
+		c3.Add(1)
+		time.Sleep(2 * time.Second)
+	}).BuildTask(ints(50))
+	// go func() {
+	// 	time.Sleep(2 * time.Second)
+	// 	executor.Pause()
+	// 	time.Sleep(10 * time.Second)
+	// 	executor.Resume()
+	// }()
 	executor.Wait(executor.Submit(task2, task1, task3))
 	time.Sleep(3 * time.Second)
 }
