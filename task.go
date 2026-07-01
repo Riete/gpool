@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/riete/round-robin/swrr"
+	"github.com/riete/robinx"
 )
 
 // Task runtime maxConcurrency will use min(Task.maxConcurrency, Executor.limiter.capacity) if Task.maxConcurrency > 0
@@ -20,7 +20,7 @@ type Task[T any] struct {
 	recover        func(T, any)
 	weight         int
 	wait           chan struct{}
-	weightedItem   *swrr.WeightedItem[*Task[T]]
+	weightedItemId robinx.ID
 	wg             *sync.WaitGroup
 }
 

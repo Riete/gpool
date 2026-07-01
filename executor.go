@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/riete/round-robin/swrr"
+	"github.com/riete/robinx"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -81,7 +81,7 @@ type Executor[T any] struct {
 	stopped     bool
 	stop        chan struct{}
 	runningTask *atomic.Int64
-	swrr        *swrr.SmoothWeightedRoundRobin[*Task[T]]
+	picker      robinx.Picker[*Task[T]]
 	mu          sync.Mutex
 }
 
@@ -91,14 +91,14 @@ func (e *Executor[T]) schedule() {
 		case <-e.stop:
 			return
 		case <-e.limiter.wait:
-			item := e.swrr.Next()
+			item := e.picker.Next()
 			if item == nil {
 				continue
 			}
 			select {
 			case <-e.stop:
 				return
-			case item.Data().wait <- struct{}{}:
+			case item.Item().wait <- struct{}{}:
 			default:
 			}
 		}
@@ -171,7 +171,7 @@ func (e *Executor[T]) limitedRateLimitRun(task *Task[T]) {
 	}()
 	defer taskLimiter.Stop()
 	defer task.done()
-	defer e.swrr.Remove(task.weightedItem)
+	defer e.picker.Remove(task.weightedItemId)
 	defer wg.Wait()
 
 	for _, param := range task.param {
@@ -206,7 +206,7 @@ func (e *Executor[T]) limitedConcurrentRun(task *Task[T]) {
 		e.counter.pending.Add(-canceled.Load())
 	}()
 	defer task.done()
-	defer e.swrr.Remove(task.weightedItem)
+	defer e.picker.Remove(task.weightedItemId)
 	defer wg.Wait()
 
 	for _, param := range task.param {
@@ -246,7 +246,7 @@ func (e *Executor[T]) unlimitedRateLimitRun(task *Task[T]) {
 		e.counter.pending.Add(-canceled.Load())
 	}()
 	defer task.done()
-	defer e.swrr.Remove(task.weightedItem)
+	defer e.picker.Remove(task.weightedItemId)
 	defer wg.Wait()
 
 	for _, param := range task.param {
@@ -273,7 +273,7 @@ func (e *Executor[T]) unlimitedConcurrentRun(task *Task[T]) {
 		e.counter.pending.Add(-canceled.Load())
 	}()
 	defer task.done()
-	defer e.swrr.Remove(task.weightedItem)
+	defer e.picker.Remove(task.weightedItemId)
 	defer wg.Wait()
 
 	for _, param := range task.param {
@@ -315,13 +315,13 @@ func (e *Executor[T]) Submit(tasks ...*Task[T]) *Future {
 		task.ctx, cancel = context.WithCancel(task.ctx)
 		cancelFuncs = append(cancelFuncs, cancel)
 		e.counter.pending.Add(int64(len(task.param)))
-		task.weightedItem = swrr.NewWeightedItem[*Task[T]](task, int64(task.weight))
 		if task.maxConcurrency > 0 {
 			task.wait = make(chan struct{}, min(task.weight, task.maxConcurrency, e.limiter.capacity))
 		} else {
 			task.wait = make(chan struct{}, min(task.weight, e.limiter.capacity))
 		}
-		e.swrr.Add(task.weightedItem)
+
+		task.weightedItemId = e.picker.Add(task, int64(task.weight))
 		e.task <- task
 	}
 	return &Future{wg: wg, cancelFuncs: cancelFuncs}
@@ -399,7 +399,7 @@ func NewExecutor[T any](capacity int, mode ExecutorMode) *Executor[T] {
 			canceled:  new(atomic.Int64),
 		},
 		runningTask: new(atomic.Int64),
-		swrr:        swrr.New[*Task[T]](),
+		picker:      robinx.NewSmoothWeightedPicker[*Task[T]](),
 	}
 	if mode == ConcurrencyMode {
 		p.idle = semaphore.NewWeighted(int64(capacity))
